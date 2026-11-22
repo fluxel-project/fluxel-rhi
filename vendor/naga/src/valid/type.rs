@@ -297,7 +297,9 @@ impl super::Validator {
                         });
                     }
 
-                    push_constant_compatibility = Err(PushConstantError::InvalidScalar(scalar));
+                    if !self.capabilities.contains(Capabilities::FLOAT16_IMMEDIATE_DATA) {
+                        push_constant_compatibility = Err(PushConstantError::InvalidScalar(scalar));
+                    }
 
                     true
                 }

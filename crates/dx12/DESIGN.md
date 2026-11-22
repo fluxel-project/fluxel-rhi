@@ -338,12 +338,15 @@ stage's bind-group layout visibility. It checks scalar and array bindings
 before native PSO creation or cache lookup.
 
 WGSL shaders declaring `immediate_address_space` can use `var<immediate>`
-with 32-bit host-shareable scalars, vectors, matrices, and array-free
+with host-shareable 32-bit scalars, F16, vectors, matrices, and array-free
 structures within 64 bytes. DX12 lowers accessible DWORDs to explicit
 HLSL packing offsets and reconstructs values using WGSL member offsets and
 matrix column strides. The selected stage's layout ranges must cover each
 accessible DWORD. Callers write these ranges through the existing explicit
-constants commands. Compatibility `var<push_constant>` uses its own ABI.
+constants commands. With the separately qualified `shader-f16` feature,
+each half is extracted at its declared byte offset. Halves in the same
+DWORD are supplied together by the caller. Compatibility
+`var<push_constant>` uses its own ABI.
 
 Direct HLSL uses resource reflection from the selected DXC entry when the
 layout has stage-restricted bindings. The check covers intersecting register

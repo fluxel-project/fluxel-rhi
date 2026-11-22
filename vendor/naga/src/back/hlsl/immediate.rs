@@ -1,6 +1,11 @@
 //! Lowers immediate data using WGSL byte offsets and HLSL `packoffset`.
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{
+    collections::{btree_map::Entry, BTreeMap},
+    format,
+    string::String,
+    vec::Vec,
+};
 use core::fmt;
 
 use crate::{proc::NameKey, GlobalVariable, Handle, Module, Scalar, Type, TypeInner, VectorSize};
@@ -34,8 +39,11 @@ impl<W: fmt::Write> Writer<'_, W> {
             write!(self.out, ", space{}", target.space)?;
         }
         writeln!(self.out, ") {{")?;
-        let mut names = Vec::with_capacity(words.len());
+        let mut names = BTreeMap::new();
         for word in &words {
+            let Entry::Vacant(slot) = names.entry(word.offset / 4) else {
+                continue;
+            };
             let name = self.namer.call("naga_immediate_word");
             let register = word.offset / 16;
             let component = ["x", "y", "z", "w"][(word.offset % 16 / 4) as usize];
@@ -43,18 +51,20 @@ impl<W: fmt::Write> Writer<'_, W> {
                 self.out,
                 "    uint {name} : packoffset(c{register}.{component});"
             )?;
-            names.push(name);
+            slot.insert(name);
         }
         writeln!(self.out, "}};")?;
         write!(self.out, "static ")?;
         self.write_type(module, global.ty)?;
         writeln!(self.out, " {name};")?;
         writeln!(self.out, "void {loader}() {{")?;
-        for (word, name) in words.iter().zip(names) {
+        for word in &words {
+            let name = &names[&(word.offset / 4)];
             let value = match word.scalar {
                 Scalar::F32 => format!("asfloat({name})"),
+                Scalar::F16 => format!("asfloat16(uint16_t({name} >> {}u))", (word.offset % 4) * 8),
                 Scalar::I32 => format!("asint({name})"),
-                Scalar::U32 => name,
+                Scalar::U32 => name.clone(),
                 _ => return Err(Error::Unimplemented("WGSL immediate scalar".into())),
             };
             writeln!(self.out, "    {} = {value};", word.destination)?;
@@ -90,7 +100,7 @@ impl<W: fmt::Write> Writer<'_, W> {
                     append_vector(
                         words,
                         &format!("{destination}[{column}]"),
-                        offset + column * column_stride(rows),
+                        offset + column * column_stride(rows, scalar),
                         rows,
                         scalar,
                     );
@@ -111,7 +121,9 @@ impl<W: fmt::Write> Writer<'_, W> {
                             append_vector(
                                 words,
                                 &format!("{destination}_{column}"),
-                                offset + member.offset + column * 8,
+                                offset
+                                    + member.offset
+                                    + column * column_stride(VectorSize::Bi, scalar),
                                 VectorSize::Bi,
                                 scalar,
                             );
@@ -133,12 +145,8 @@ impl<W: fmt::Write> Writer<'_, W> {
     }
 }
 
-fn column_stride(rows: VectorSize) -> u32 {
-    if rows == VectorSize::Bi {
-        8
-    } else {
-        16
-    }
+fn column_stride(rows: VectorSize, scalar: Scalar) -> u32 {
+    u32::from(scalar.width) * if rows == VectorSize::Bi { 2 } else { 4 }
 }
 
 fn append_vector(
@@ -151,7 +159,7 @@ fn append_vector(
     for component in 0..size as u32 {
         words.push(Word {
             destination: format!("{destination}[{component}]"),
-            offset: offset + component * 4,
+            offset: offset + component * u32::from(scalar.width),
             scalar,
         });
     }

@@ -38,12 +38,11 @@ pub(super) fn uses_entry_builtin(
         .any(|arg| uses(module, arg.ty, arg.binding.as_ref(), builtins))
 }
 
-pub(super) fn validate_f16_bindings(module: &naga::Module) -> Result<()> {
+pub(super) fn validate_f16_bindings(module: &naga::Module, standard_immediate: bool) -> Result<()> {
     if module.global_variables.iter().any(|(_, global)| {
-        matches!(
-            global.space,
-            naga::AddressSpace::Uniform | naga::AddressSpace::PushConstant
-        ) && contains_f16(&module.types, global.ty)
+        (global.space == naga::AddressSpace::Uniform
+            || (!standard_immediate && global.space == naga::AddressSpace::PushConstant))
+            && contains_f16(&module.types, global.ty)
     }) {
         return Err(Error::Unsupported(
             "DX12 WGSL f16 uniform and immediate layout",
@@ -106,6 +105,9 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
     }
     if requires_f16(desc) {
         caps |= naga::valid::Capabilities::SHADER_FLOAT16;
+        if super::immediates::required(desc) {
+            caps |= naga::valid::Capabilities::FLOAT16_IMMEDIATE_DATA;
+        }
     }
     if requires_view_index(desc) {
         caps |= naga::valid::Capabilities::MULTIVIEW;

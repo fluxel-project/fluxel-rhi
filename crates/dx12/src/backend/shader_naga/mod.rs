@@ -124,7 +124,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     )
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
-    validation::validate_f16_bindings(&module)?;
+    validation::validate_f16_bindings(&module, standard_immediate)?;
     immediates::blocks(&module, standard_immediate)?;
     for entry in &desc.entries {
         let stage = match entry.stage {
@@ -413,7 +413,7 @@ fn compile_inner(
     )
     .validate(&original)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
-    validation::validate_f16_bindings(&original)?;
+    validation::validate_f16_bindings(&original, standard_immediate)?;
     let mut values = naga::back::PipelineConstants::default();
     if let Some(constants) = constants {
         for (name, value) in constants {

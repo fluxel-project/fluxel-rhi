@@ -186,6 +186,8 @@ bitflags::bitflags! {
         /// Support for `quantizeToF16`, `pack2x16float`, and `unpack2x16float`, which store
         /// `f16`-precision values in `f32`s.
         const SHADER_FLOAT16_IN_FLOAT32 = 1 << 28;
+        /// F16 leaves in the immediate address space use native halfword loads.
+        const FLOAT16_IMMEDIATE_DATA = 1 << 29;
     }
 }
 

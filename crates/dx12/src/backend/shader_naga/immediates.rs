@@ -47,21 +47,25 @@ fn accessible_slots(
     offset: u32,
 ) -> Result<u32> {
     use naga::{Scalar, TypeInner, VectorSize};
-    let words = |offset: u32, count: u32| ((1u32 << count) - 1) << (offset / 4);
+    let words = |offset: u32, bytes: u32| {
+        let start = offset / 4;
+        let end = (offset + bytes).div_ceil(4);
+        ((1u32 << (end - start)) - 1) << start
+    };
     Ok(match module.types[ty].inner {
-        TypeInner::Scalar(Scalar::I32 | Scalar::U32 | Scalar::F32) => words(offset, 1),
-        TypeInner::Vector {
-            size,
-            scalar: Scalar::I32 | Scalar::U32 | Scalar::F32,
-        } => words(offset, size as u32),
+        TypeInner::Scalar(scalar) if valid_scalar(scalar) => words(offset, u32::from(scalar.width)),
+        TypeInner::Vector { size, scalar } if valid_scalar(scalar) => {
+            words(offset, size as u32 * u32::from(scalar.width))
+        }
         TypeInner::Matrix {
             columns,
             rows,
-            scalar: Scalar::F32,
+            scalar: scalar @ (Scalar::F32 | Scalar::F16),
         } => {
-            let stride = if rows == VectorSize::Bi { 8 } else { 16 };
+            let width = u32::from(scalar.width);
+            let stride = width * if rows == VectorSize::Bi { 2 } else { 4 };
             (0..columns as u32).fold(0, |slots, column| {
-                slots | words(offset + column * stride, rows as u32)
+                slots | words(offset + column * stride, rows as u32 * width)
             })
         }
         TypeInner::Struct { ref members, .. } => members.iter().try_fold(0, |slots, member| {
@@ -74,6 +78,13 @@ fn accessible_slots(
         }
         _ => return Err(Error::Unsupported("DX12 WGSL immediate store type")),
     })
+}
+
+fn valid_scalar(scalar: naga::Scalar) -> bool {
+    matches!(
+        scalar,
+        naga::Scalar::I32 | naga::Scalar::U32 | naga::Scalar::F32 | naga::Scalar::F16
+    )
 }
 
 fn block(module: &naga::Module) -> Result<Option<(naga::Handle<naga::GlobalVariable>, u32)>> {

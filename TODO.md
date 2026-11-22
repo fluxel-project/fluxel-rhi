@@ -460,10 +460,10 @@ mapped per mode and verified with depth and storage readback.
 raster uses the existing root-constant ABI for flat 32-bit scalar and vector
 layouts. Pipeline admission checks the full block span against that stage's
 ranges. Standard `var<immediate>` uses the separately gated
-`immediate_address_space` route for 32-bit host-shareable scalars, vectors,
-matrices, and array-free nested structures up to 64 bytes. It qualifies the
+`immediate_address_space` route for host-shareable 32-bit scalars, F16,
+vectors, matrices, and array-free nested structures up to 64 bytes. It qualifies the
 selected stage's accessible DWORDs, including explicit gaps and matrix
-stride. F16 layout remains an R09 follow-up. At shader creation, reject
+stride. At shader creation, reject
 direct arrays and structures containing an array at any nesting depth.
 
 **Acceptance:** Verify byte-exact readback for adjacent and padded members,
@@ -525,9 +525,10 @@ a standardized scalar route and exact lowering exist.
 
 **Status:** DX12 qualifies native F16 with Shader Model 6.2 and OPTIONS4.
 WGSL and HLSL use the native DXC type option and direct DXIL can declare
-the device requirement. WGSL F16 uniform and immediate layouts are a planned
-D4 ABI task. Each shape remains unavailable until standardized source syntax,
-byte layout, and DX12 lowering are verified.
+the device requirement. Standard WGSL immediates extract native half bits at
+their WGSL offsets, with explicit updates at DWORD granularity. WGSL F16
+uniforms remain unavailable pending lowering that preserves the declared
+layout across nesting, matrices, arrays, and dynamic indices.
 
 **Acceptance:** Verify WGSL arithmetic, storage, workgroup data and raster
 interfaces with exact half values and readback. Cover finite F16 overrides,
@@ -1076,10 +1077,11 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   collectives do not derive wave identity/count or memory ordering. Each new
   operation needs a standardized language route, a matching DX12 operation,
   and readback evidence.
-- **R09, DESIGNING — WGSL F16 ABI in uniforms and immediates.** Evaluate
-  byte-addressed lowering for legal two-byte offsets and nested layouts. Accept
-  a shape only after offset, update, and readback tests. Root constants retain
-  their DWORD budget and alignment constraints.
+- **R09, IMPLEMENTING — WGSL F16 ABI in uniforms and immediates.** Standard
+  immediate lowering extracts either half of a DWORD without changing root
+  constant alignment. DXC has compiled nested and padded matrix layouts.
+  GPU readback must cover adjacent halves and explicit updates. Uniforms
+  still need byte-addressed lowering for two-byte offsets and nested layouts.
 - **R10, UNSUPPORTED — WGSL I16/U16.** Fluxel accepts standard WGSL and
   standardized WGSL extensions. It will not import a backend-specific shader
   language extension for these types. Native HLSL/DXIL 16-bit integers remain
