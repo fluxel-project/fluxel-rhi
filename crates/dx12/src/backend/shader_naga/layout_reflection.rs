@@ -56,7 +56,7 @@ pub(in crate::backend) fn reflect(
     };
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
-    let module = diagnostics::parse_wgsl(source)?;
+    let module = diagnostics::parse_wgsl(source, super::immediates::required(desc))?;
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         validation_capabilities(desc),

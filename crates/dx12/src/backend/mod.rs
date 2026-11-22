@@ -527,6 +527,18 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         {
             return api::ShaderRoute::Unsupported;
         }
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_IMMEDIATE_DATA)
+            && (desc.format != api::ShaderFormat::Wgsl
+                || desc
+                    .required_features
+                    .iter()
+                    .any(|feature| feature == api::SHADER_FEATURE_PUSH_CONSTANTS))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if !shader_features_supported(
             &desc.required_features,
             device.0.ray_query_supported,
@@ -651,6 +663,7 @@ fn shader_features_supported(
     features.iter().all(|feature| match feature.as_str() {
         api::SHADER_FEATURE_RAY_QUERY => ray_query_supported,
         api::SHADER_FEATURE_PUSH_CONSTANTS => true,
+        api::SHADER_FEATURE_IMMEDIATE_DATA => true,
         api::SHADER_FEATURE_VIEW_INDEX => true,
         api::SHADER_FEATURE_DX12_MESH_FULL_ARRAY_INDEX => true,
         api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS => true,

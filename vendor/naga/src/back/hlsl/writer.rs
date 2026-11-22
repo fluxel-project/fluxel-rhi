@@ -141,6 +141,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
             pipeline_options,
             entry_point_io: crate::FastHashMap::default(),
             named_expressions: crate::NamedExpressions::default(),
+            immediate_loaders: Vec::new(),
             wrapped: super::Wrapped::default(),
             written_committed_intersection: false,
             written_candidate_intersection: false,
@@ -161,6 +162,7 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         );
         self.entry_point_io.clear();
         self.named_expressions.clear();
+        self.immediate_loaders.clear();
         self.wrapped.clear();
         self.written_committed_intersection = false;
         self.written_candidate_intersection = false;
@@ -948,6 +950,9 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         handle: Handle<crate::GlobalVariable>,
     ) -> BackendResult {
         let global = &module.global_variables[handle];
+        if self.options.wgsl_immediate_data && global.space == crate::AddressSpace::PushConstant {
+            return self.write_immediate_global(module, handle);
+        }
         let inner = &module.types[global.ty].inner;
 
         let handle_ty = match *inner {
@@ -1728,6 +1733,11 @@ impl<'a, W: fmt::Write> super::Writer<'a, W> {
         }
 
         if let back::FunctionType::EntryPoint(index) = func_ctx.ty {
+            for (global, loader) in &self.immediate_loaders {
+                if !info[*global].is_empty() {
+                    writeln!(self.out, "{}{loader}();", back::INDENT)?;
+                }
+            }
             self.write_ep_arguments_initialization(module, func, index)?;
         }
 

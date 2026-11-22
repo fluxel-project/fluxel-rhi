@@ -494,6 +494,7 @@ impl Dx12 {
                 planar_nv12,
                 planar_p010,
                 push_constants: true,
+                wgsl_immediate_data: true,
                 indirect_draw: true,
                 indirect_first_instance: true,
                 multi_draw: true,

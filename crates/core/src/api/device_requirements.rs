@@ -64,6 +64,7 @@ device_features! {
     MultiDraw => multi_draw, "multi-draw";
     MultiDrawCount => multi_draw_count, "multi-draw-count";
     PushConstants => push_constants, "push-constants";
+    WgslImmediateData => wgsl_immediate_data, "immediate_address_space";
     StorageBuffers => storage_buffers, "storage-buffers";
     GpuUploadBuffers => gpu_upload_buffers, "gpu-upload-buffers";
     StorageTextures => storage_textures, "storage-textures";

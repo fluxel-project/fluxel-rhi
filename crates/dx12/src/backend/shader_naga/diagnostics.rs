@@ -5,15 +5,19 @@ use fluxel_rhi_core::api::{
     ShaderDiagnosticSeverity, ShaderDiagnosticSource,
 };
 
-pub(super) fn parse_wgsl(source: &str) -> Result<naga::Module> {
-    naga::front::wgsl::parse_str(source).map_err(|error| {
-        wgsl_report(
-            source,
-            error.message().into(),
-            error.labels(),
-            error.emit_to_string(source),
-        )
-    })
+pub(super) fn parse_wgsl(source: &str, immediate_data: bool) -> Result<naga::Module> {
+    let mut options = naga::front::wgsl::Options::new();
+    options.immediate_data = immediate_data;
+    naga::front::wgsl::Frontend::new_with_options(options)
+        .parse(source)
+        .map_err(|error| {
+            wgsl_report(
+                source,
+                error.message().into(),
+                error.labels(),
+                error.emit_to_string(source),
+            )
+        })
 }
 
 pub(super) fn wgsl_validation(

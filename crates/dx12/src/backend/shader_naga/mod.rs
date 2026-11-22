@@ -115,7 +115,8 @@ pub(crate) fn preprocess_direct_hlsl(
 pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
-    let module = diagnostics::parse_wgsl(source)?;
+    let standard_immediate = immediates::required(desc);
+    let module = diagnostics::parse_wgsl(source, standard_immediate)?;
     buffer_array::validate(&module, &desc.entries)?;
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -124,7 +125,7 @@ pub(crate) fn validate_source(desc: &api::ShaderDesc) -> Result<()> {
     .validate(&module)
     .map_err(|e| diagnostics::wgsl_validation(source, e))?;
     validation::validate_f16_bindings(&module)?;
-    immediates::block(&module)?;
+    immediates::blocks(&module, standard_immediate)?;
     for entry in &desc.entries {
         let stage = match entry.stage {
             api::ShaderStage::Compute => naga::ShaderStage::Compute,
@@ -321,6 +322,7 @@ fn compile_inner(
         || desc.required_features.iter().any(|x| {
             x != api::SHADER_FEATURE_RAY_QUERY
                 && x != api::SHADER_FEATURE_PUSH_CONSTANTS
+                && x != api::SHADER_FEATURE_IMMEDIATE_DATA
                 && x != api::SHADER_FEATURE_VIEW_INDEX
                 && x != api::SHADER_FEATURE_POINTER_COMPOSITE_ACCESS
                 && x != api::SHADER_FEATURE_F16
@@ -346,7 +348,8 @@ fn compile_inner(
     }
     let source =
         std::str::from_utf8(&desc.bytes).map_err(|_| Error::Shader("WGSL is not UTF-8".into()))?;
-    let original = diagnostics::parse_wgsl(source)?;
+    let standard_immediate = immediates::required(desc);
+    let original = diagnostics::parse_wgsl(source, standard_immediate)?;
     buffer_array::validate(&original, &desc.entries)?;
     let texture_atomic_route = match desc
         .required_features
@@ -523,7 +526,7 @@ fn compile_inner(
     }
     let required_wave_size = target.required_wave_size;
     let native_f16 = requires_f16(desc);
-    let immediate = immediates::block(&module)?;
+    let immediates = immediates::blocks(&module, standard_immediate)?;
     let mut options = naga::back::hlsl::Options {
         shader_model: if target.required_wave_size.is_some() {
             naga::back::hlsl::ShaderModel::V6_6
@@ -543,7 +546,8 @@ fn compile_inner(
             naga::back::hlsl::ShaderModel::V6_0
         },
         fake_missing_bindings: false,
-        push_constants_target: immediate.map(|_| naga::back::hlsl::BindTarget {
+        wgsl_immediate_data: standard_immediate,
+        push_constants_target: (!immediates.is_empty()).then_some(naga::back::hlsl::BindTarget {
             space: super::pipeline::IMMEDIATE_SPACE,
             register: super::pipeline::IMMEDIATE_REGISTER,
             ..Default::default()
@@ -657,9 +661,9 @@ fn compile_inner(
             .ok_or_else(|| Error::Shader("WGSL entry not found".into()))?;
         validation::validate_entry(&module, &module.entry_points[index])?;
         if require_layout {
-            if let Some((handle, bytes)) = immediate {
+            for &(handle, slots) in &immediates {
                 if !info.get_entry_point(index)[handle].is_empty() {
-                    immediates::validate_range(target.push_constants, entry.stage, bytes)?;
+                    immediates::validate_range(target.push_constants, entry.stage, slots)?;
                 }
             }
             for (handle, global) in module.global_variables.iter() {

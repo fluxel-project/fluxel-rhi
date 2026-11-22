@@ -459,9 +459,12 @@ mapped per mode and verified with depth and storage readback.
 **Status:** The compatibility `var<push_constant>` WGSL route in compute and
 raster uses the existing root-constant ABI for flat 32-bit scalar and vector
 layouts. Pipeline admission checks the full block span against that stage's
-ranges. Standard `var<immediate>` is pending frontend and layout support.
-Its store type must be host-shareable and constructible. At shader creation,
-reject direct arrays and structures containing an array at any nesting depth.
+ranges. Standard `var<immediate>` uses the separately gated
+`immediate_address_space` route for 32-bit host-shareable scalars, vectors,
+matrices, and array-free nested structures up to 64 bytes. It qualifies the
+selected stage's accessible DWORDs, including explicit gaps and matrix
+stride. F16 layout remains an R09 follow-up. At shader creation, reject
+direct arrays and structures containing an array at any nesting depth.
 
 **Acceptance:** Verify byte-exact readback for adjacent and padded members,
 partial writes, stages with different ranges, and rejection of missing
@@ -1087,7 +1090,7 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   capability remains separately gated and does not extend WGSL. Reopen only
   after a standardized scalar route, frontend support, exact lowering, and
   boundary-value evidence exist. Do not add private WGSL syntax.
-- **R12, DESIGNING — standard WGSL immediates.** Validate the source type
+- **R12, VERIFYING — standard WGSL immediates.** Validate the source type
   before DX12 lowering. Standard WGSL excludes arrays, including arrays
   inside nested structures. For eligible matrices and array-free structures,
   verify byte offsets, indexing, partial writes, stage ranges and the

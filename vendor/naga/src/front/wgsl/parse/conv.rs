@@ -6,7 +6,11 @@ use crate::Span;
 
 use alloc::boxed::Box;
 
-pub fn map_address_space(word: &str, span: Span) -> Result<'_, crate::AddressSpace> {
+pub fn map_address_space(
+    word: &str,
+    span: Span,
+    immediate_data: bool,
+) -> Result<'_, crate::AddressSpace> {
     match word {
         "private" => Ok(crate::AddressSpace::Private),
         "workgroup" => Ok(crate::AddressSpace::WorkGroup),
@@ -14,7 +18,8 @@ pub fn map_address_space(word: &str, span: Span) -> Result<'_, crate::AddressSpa
         "storage" => Ok(crate::AddressSpace::Storage {
             access: crate::StorageAccess::default(),
         }),
-        "push_constant" => Ok(crate::AddressSpace::PushConstant),
+        "push_constant" if !immediate_data => Ok(crate::AddressSpace::PushConstant),
+        "immediate" if immediate_data => Ok(crate::AddressSpace::PushConstant),
         "function" => Ok(crate::AddressSpace::Function),
         _ => Err(Box::new(Error::UnknownAddressSpace(span))),
     }

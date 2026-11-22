@@ -282,6 +282,9 @@ impl<'a> BindingParser<'a> {
 pub struct Options {
     /// Controls whether the parser should parse doc comments.
     pub parse_doc_comments: bool,
+    /// Maps standard immediate declarations to the internal push-constant space.
+    /// The consumer must validate the standard store types and lower their layout.
+    pub immediate_data: bool,
 }
 
 impl Options {
@@ -289,6 +292,7 @@ impl Options {
     pub const fn new() -> Self {
         Options {
             parse_doc_comments: false,
+            immediate_data: false,
         }
     }
 }
@@ -296,6 +300,7 @@ impl Options {
 pub struct Parser {
     rules: Vec<(Rule, usize)>,
     recursion_depth: u32,
+    immediate_data: bool,
 }
 
 impl Parser {
@@ -303,6 +308,7 @@ impl Parser {
         Parser {
             rules: Vec::new(),
             recursion_depth: 0,
+            immediate_data: false,
         }
     }
 
@@ -1318,7 +1324,7 @@ impl Parser {
                     };
                     crate::AddressSpace::Storage { access }
                 }
-                _ => conv::map_address_space(class_str, span)?,
+                _ => conv::map_address_space(class_str, span, self.immediate_data)?,
             };
             lexer.expect(Token::Paren('>'))?;
         }
@@ -1691,7 +1697,7 @@ impl Parser {
             "ptr" => {
                 lexer.expect_generic_paren('<')?;
                 let (ident, span) = lexer.next_ident_with_span()?;
-                let mut space = conv::map_address_space(ident, span)?;
+                let mut space = conv::map_address_space(ident, span, self.immediate_data)?;
                 lexer.expect(Token::Separator(','))?;
                 let base = self.type_decl(lexer, ctx)?;
                 if let crate::AddressSpace::Storage { ref mut access } = space {
@@ -3085,6 +3091,7 @@ impl Parser {
         options: &Options,
     ) -> Result<'a, ast::TranslationUnit<'a>> {
         self.reset();
+        self.immediate_data = options.immediate_data;
 
         let mut lexer = Lexer::new(source, !options.parse_doc_comments);
         let mut tu = ast::TranslationUnit::default();
@@ -3126,6 +3133,9 @@ impl Parser {
                     }
                     DirectiveKind::Requires => {
                         self.directive_ident_list(&mut lexer, |ident, span| {
+                            if ident == "immediate_address_space" && options.immediate_data {
+                                return Ok(());
+                            }
                             match LanguageExtension::from_ident(ident) {
                                 Some(LanguageExtension::Implemented(_kind)) => {
                                     // NOTE: No further validation is needed for an extension, so

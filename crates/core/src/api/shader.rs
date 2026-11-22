@@ -41,6 +41,8 @@ pub struct ShaderEntryPoint {
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
 /// The shader uses layout-declared inline constants.
 pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
+/// Standard WGSL immediate address space.
+pub const SHADER_FEATURE_IMMEDIATE_DATA: &str = "immediate_address_space";
 /// A vertex, fragment, or supported native mesh shader reads the view index.
 pub const SHADER_FEATURE_VIEW_INDEX: &str = "view-index";
 /// Native DXIL mesh shader needs DX12's full 11-bit render target array

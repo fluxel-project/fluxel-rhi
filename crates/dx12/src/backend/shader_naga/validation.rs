@@ -96,11 +96,12 @@ pub(super) fn validation_capabilities(desc: &api::ShaderDesc) -> naga::valid::Ca
         | naga::valid::Capabilities::SAMPLER_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
         | naga::valid::Capabilities::STORAGE_TEXTURE_ARRAY_NON_UNIFORM_INDEXING;
-    if desc
-        .required_features
-        .iter()
-        .any(|feature| feature == api::SHADER_FEATURE_PUSH_CONSTANTS)
-    {
+    if desc.required_features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            api::SHADER_FEATURE_PUSH_CONSTANTS | api::SHADER_FEATURE_IMMEDIATE_DATA
+        )
+    }) {
         caps |= naga::valid::Capabilities::PUSH_CONSTANT;
     }
     if requires_f16(desc) {
