@@ -92,6 +92,7 @@ fn imported_fence(
     if value == u64::MAX {
         return Err(Error::InvalidRange);
     }
+    device.require_active()?;
     let mut fence = None;
     // SAFETY: the unsafe Core import contract supplies a valid compatible NT
     // handle. OpenSharedHandle only borrows it during this call; `handle` then
@@ -135,6 +136,7 @@ fn exported_fence(device: &Dx12Device) -> Result<Dx12ExternalSync> {
 }
 
 fn resource(device: &Dx12Device, handle: OwnedHandle) -> Result<ID3D12Resource> {
+    device.require_active()?;
     let mut resource = None;
     // SAFETY: the unsafe Core import contract supplies an NT handle naming a
     // shareable resource compatible with this device. The COM reference outlives
@@ -191,7 +193,9 @@ fn import_buffer(
     handle: OwnedHandle,
     desc: &api::ExternalResourceDesc,
 ) -> Result<Dx12Buffer> {
-    if desc.size == 0 || desc.offset.checked_add(desc.size).is_none() {
+    // The handle names the committed resource and its implicit heap. It does
+    // not identify a resource placed at an offset in an exported heap.
+    if desc.size == 0 || desc.offset != 0 {
         return Err(Error::InvalidRange);
     }
     let resource = resource(device, handle)?;

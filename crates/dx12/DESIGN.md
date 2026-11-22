@@ -162,6 +162,8 @@ committed residency path. The application supplies the matching import shape
 and orders ownership with explicit buffer or texture state transitions and
 the external fence. The backend puts waits and signals at the requested
 queue boundaries and retains their native owners through completion.
+DX12 imports a shared committed resource object at allocation offset zero.
+Buffer slices use the normal RHI range operations after import.
 Explicit upload and readback heaps share an access state with their placed
 buffers. Map leases keep their physical byte ranges registered until native
 `Unmap`. Residency changes require every map lease to end. Mapping requires

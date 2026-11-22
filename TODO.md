@@ -1381,11 +1381,13 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   range, queue ordering, and retained ownership. Acceptance requires true and
   false GPU cases with distinct output.
 - **R25, VERIFYING — native interop.** Scoped native recording and explicit
-  shared allocation use static backend boundaries. Two independently opened
-  devices on one adapter exchanged a Core-created buffer and texture, including
-  release fence wait, wrong-device rejection and in-flight retention. Add
-  permanent coverage for these paths, invalid import metadata and handle
-  lifetime. Add cross-adapter export only with a concrete consumer, explicit
+  shared allocation use static backend boundaries. Distinct Core devices
+  in one process verified wrong-device rejection and in-flight retention.
+  A separate-process GPU probe exchanged Core-created resources via NT
+  buffers, textures and release fences on one adapter. Native removal rejects
+  pending imports, and a nonzero committed allocation offset is rejected and
+  its consumed handle closed. Add permanent coverage for these paths.
+  Add cross-adapter export only with a concrete consumer, explicit
   cross-adapter heap and fence semantics, and a two-adapter workload. A dynamic
   backend dispatcher is `OUT_OF_SCOPE`: it would weaken typed device identity
   and introduce runtime dispatch into the public RHI model.
