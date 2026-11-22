@@ -30,6 +30,15 @@ pub struct IndirectCountRoute {
     pub recording: IndirectCountRecording,
 }
 
+/// Native batching for a nonempty GPU-counted operation with a fixed record layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndirectCountPlan {
+    pub route: IndirectCountRoute,
+    /// The number of native counted draw calls recorded for the declared
+    /// maximum, regardless of the eventual value in the GPU count buffer.
+    pub native_batches: u32,
+}
+
 /// If vertex/instance index adjustment is required by the selected pipeline,
 /// select a route using the declared maximum count rather than the GPU value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +69,26 @@ impl IndirectCountProfile {
 }
 
 impl<B: RasterBackend> Device<B> {
+    /// Computes the selected route and native batch count before buffer
+    /// allocation. Use `multi_draw_count_support` to qualify actual ranges.
+    pub fn multi_draw_count_plan(
+        &self,
+        pipeline: &RasterPipeline<B>,
+        maximum: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<Option<IndirectCountPlan>> {
+        let Some(route) = self.multi_draw_count_route(pipeline, maximum)? else {
+            return Ok(None);
+        };
+        let native_batches =
+            B::Extras::multi_draw_count_batches(&pipeline.native, maximum, stride, indexed)?;
+        Ok(Some(IndirectCountPlan {
+            route,
+            native_batches,
+        }))
+    }
+
     /// Checks argument and count buffer ranges and reports the selected route.
     /// Binding state and contents written by the GPU remain execution inputs.
     pub fn multi_draw_count_support(

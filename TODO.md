@@ -935,7 +935,8 @@ preconditions on the target backend. RenderGraph decides when to use it.
 
 **Status:** Core exposes an optional per-device profile for GPU-count draws.
 DX12 publishes its direct native route and its two vertex-index adjustment
-routes. Route tests and classifications for the remaining backends are still
+routes, including exact native batch counts for the declared maximum and
+record layout. Route tests and classifications for the remaining backends are still
 pending. WebGPU currently preprocesses GPU arguments, may allocate temporary
 buffers, splits the pass, and emits repeated native draw calls. The P7 store-op
 guard prevents one incorrect combination.
@@ -951,6 +952,10 @@ from source, and expose facts needed before graph compilation without adding
 per-draw queries or allocation. Demonstrate that a caller can distinguish
 native execution from GPU preprocessing, pass splitting, temporary resources,
 and CPU iteration, then verify descriptors against backend route tests.
+Compare the DX12 reported batch count with native recording for both
+index modes, exact and crossed stride-dependent boundaries, and maximum
+zero. GPU-produced counts below, at, and above the maximum still need
+draw-output readback.
 
 ### P7-WEBGPU-SPLIT-STATE-COST — bound ordinary pass-state tracking overhead
 

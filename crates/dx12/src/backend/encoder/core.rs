@@ -202,6 +202,14 @@ impl fluxel_rhi_core::backend::RasterExtrasOps<Dx12> for RasterExtras {
     ) -> Result<(), Error> {
         super::indirect::validate_counted(args, count, maximum, stride, indexed)
     }
+    fn multi_draw_count_batches(
+        pipeline: &super::super::Dx12RasterPipeline,
+        maximum: u32,
+        stride: u32,
+        indexed: bool,
+    ) -> Result<u32, Error> {
+        super::indirect::batch_count(pipeline, maximum, stride, indexed)
+    }
     fn multi_draw_count(
         encoder: &mut Dx12Encoder,
         args: &Dx12Buffer,

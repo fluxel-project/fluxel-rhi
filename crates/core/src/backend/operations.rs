@@ -433,6 +433,14 @@ pub trait RasterExtrasOps<B: Backend> {
     ) -> Result<()> {
         Err(Error::Unsupported("multi draw count support query"))
     }
+    fn multi_draw_count_batches(
+        _pipeline: &B::NativeRasterPipeline,
+        _maximum: u32,
+        _stride: u32,
+        _indexed: bool,
+    ) -> Result<u32> {
+        Err(Error::Unsupported("multi draw count batch planning"))
+    }
     fn multi_draw_count(
         encoder: &mut B::NativeEncoder,
         args: &B::NativeBuffer,

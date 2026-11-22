@@ -36,12 +36,10 @@ fn validate_arguments(
     stride: u32,
     indexed: bool,
 ) -> Result<(), Error> {
-    if !arguments.usage.contains(api::BufferUsage::INDIRECT)
-        || offset % 4 != 0
-        || (count != 0 && (stride < if indexed { 20 } else { 16 } || stride % 4 != 0))
-    {
+    if !arguments.usage.contains(api::BufferUsage::INDIRECT) || offset % 4 != 0 {
         return Err(Error::InvalidRange);
     }
+    validate_stride(count, stride, indexed)?;
     let bytes = u64::from(count) * u64::from(stride);
     if offset
         .checked_add(bytes)
@@ -50,6 +48,33 @@ fn validate_arguments(
         return Err(Error::InvalidRange);
     }
     Ok(())
+}
+
+fn validate_stride(count: u32, stride: u32, indexed: bool) -> Result<(), Error> {
+    if count != 0 && (stride < if indexed { 20 } else { 16 } || stride % 4 != 0) {
+        return Err(Error::InvalidRange);
+    }
+    Ok(())
+}
+
+pub(super) fn batch_count(
+    pipeline: &Dx12RasterPipeline,
+    maximum: u32,
+    stride: u32,
+    indexed: bool,
+) -> Result<u32, Error> {
+    validate_stride(maximum, stride, indexed)?;
+    match MULTI_DRAW_COUNT_PROFILE
+        .route(pipeline.0.vertex_index_root.is_some(), maximum)
+        .map(|route| route.preprocess)
+    {
+        None => Ok(0),
+        Some(api::IndirectCountPreprocess::ComputeArguments) => {
+            let limit = super::indirect_pack::chunk_records(stride, indexed)?;
+            Ok(maximum.div_ceil(limit))
+        }
+        Some(_) => Ok(1),
+    }
 }
 
 fn execute(

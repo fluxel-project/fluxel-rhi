@@ -116,7 +116,10 @@ operation from WGSL vertex and instance index adjustment. DX12 copies small
 batches and packs larger batches on the GPU. Both adjusted routes use
 temporary arguments, retain the native count operation, and keep the raster
 pass active. CPU recording grows per record for the bounded copy and per
-batch for the compute conversion.
+batch for the compute conversion. `Device::multi_draw_count_plan` reports
+the number of native counted draws before buffer allocation. Ordinary
+and small-copy routes record one native batch. The pack route uses the
+same stride-dependent batch limit as command recording.
 
 The optional debug callback is a diagnostic aid. It does not make driver
 validation output a substitute for completion or visual correctness.
