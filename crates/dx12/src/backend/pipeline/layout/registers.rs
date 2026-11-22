@@ -29,6 +29,44 @@ impl PipelineLayoutState {
                 .any(|(_, entry)| !entry.visibility.contains(&stage))
     }
 
+    /// An AS shader register span must fit a visible, typed acceleration slot.
+    /// Using a generic SRV range can otherwise admit an unrelated view type.
+    pub(crate) fn validate_native_acceleration_binding(
+        &self,
+        stage: api::ShaderStage,
+        space: u32,
+        registers: std::ops::Range<u64>,
+    ) -> Result<()> {
+        let unbounded = registers.end == u64::from(u32::MAX) + 1;
+        let covered = self
+            .register_map
+            .iter()
+            .any(|&(group, binding, start, class, count)| {
+                let start = u64::from(start);
+                if group != space || class != 1 || registers.start < start {
+                    return false;
+                }
+                self.binding_entries.iter().any(|(group, entry)| {
+                    *group == space
+                        && entry.binding == binding
+                        && matches!(entry.ty, api::BindingType::AccelerationStructure)
+                        && entry.visibility.contains(&stage)
+                        && if unbounded {
+                            registers.start == start
+                                && matches!(entry.count, api::BindingCount::RuntimeSized { .. })
+                        } else {
+                            registers.end <= start + u64::from(count)
+                        }
+                })
+            });
+        if !covered {
+            return Err(Error::Shader(format!(
+                "DX12 acceleration register range {registers:?} in space {space} lacks a matching {stage:?} layout binding"
+            )));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_native_binding(
         &self,
         stage: api::ShaderStage,

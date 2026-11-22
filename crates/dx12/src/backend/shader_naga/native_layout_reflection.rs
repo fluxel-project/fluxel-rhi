@@ -3,8 +3,6 @@
 use fluxel_rhi_core::api::{self, Error, Result};
 use windows::Win32::Graphics::{Direct3D::*, Direct3D12::*};
 
-use super::super::pipeline::PipelineLayoutState;
-
 pub(super) fn reflect(
     bytes: &[u8],
     stage: api::ShaderStage,
@@ -41,45 +39,6 @@ pub(super) fn reflect(
         Ok(())
     })?;
     Ok(entries)
-}
-
-pub(in crate::backend) fn validate_visibility(
-    bytes: &[u8],
-    stage: api::ShaderStage,
-    layout: &PipelineLayoutState,
-) -> Result<()> {
-    if !layout.requires_native_binding_validation(stage) {
-        return Ok(());
-    }
-    visit_bindings(bytes, stage, |_, resource| {
-        let class = register_class(resource.Type)?;
-        let start = u64::from(resource.BindPoint);
-        let end = match resource.BindCount {
-            0 | u32::MAX => u64::from(u32::MAX) + 1,
-            count => start + u64::from(count),
-        };
-        layout.validate_native_binding(stage, resource.Space, class, start..end)
-    })
-}
-
-fn register_class(ty: D3D_SHADER_INPUT_TYPE) -> Result<u8> {
-    match ty {
-        D3D_SIT_CBUFFER => Ok(0),
-        D3D_SIT_TBUFFER
-        | D3D_SIT_TEXTURE
-        | D3D_SIT_STRUCTURED
-        | D3D_SIT_BYTEADDRESS
-        | D3D_SIT_RTACCELERATIONSTRUCTURE => Ok(1),
-        D3D_SIT_UAV_RWTYPED
-        | D3D_SIT_UAV_RWSTRUCTURED
-        | D3D_SIT_UAV_RWBYTEADDRESS
-        | D3D_SIT_UAV_APPEND_STRUCTURED
-        | D3D_SIT_UAV_CONSUME_STRUCTURED
-        | D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER
-        | D3D_SIT_UAV_FEEDBACKTEXTURE => Ok(2),
-        D3D_SIT_SAMPLER => Ok(3),
-        _ => Err(Error::Unsupported("DXIL shader resource register class")),
-    }
 }
 
 fn visit_bindings(

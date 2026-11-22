@@ -16,6 +16,7 @@ const RESOURCE_PREFIX_SIZE: usize = 16;
 const RESOURCE_DETAILS_SIZE: usize = 24;
 const UAV_TYPED: u32 = 6;
 const TEXTURE_2D: u32 = 2;
+const ACCELERATION_STRUCTURE: u32 = 16;
 const USED_BY_ATOMIC_64: u32 = 1;
 
 fn atomic_texture_ranges(
@@ -64,10 +65,13 @@ pub(in crate::backend) fn validate(
     stage: ShaderStage,
     layout: &PipelineLayoutState,
 ) -> Result<()> {
-    if !layout.requires_native_binding_validation(stage) {
-        return Ok(());
-    }
+    let validate_visibility = layout.requires_native_binding_validation(stage);
     for row in resource_rows(bytes, stage)? {
+        let acceleration =
+            row.len() >= RESOURCE_DETAILS_SIZE && word(row, 16)? == ACCELERATION_STRUCTURE;
+        if !validate_visibility && !acceleration {
+            continue;
+        }
         // PSVResourceType orders Sampler, CBV, SRVs, then UAVs.
         let class = match word(row, 0)? {
             1 => 3,
@@ -82,7 +86,14 @@ pub(in crate::backend) fn validate(
         if start >= end {
             return Err(malformed());
         }
-        layout.validate_native_binding(stage, space, class, start..end)?;
+        if acceleration {
+            if class != 1 {
+                return Err(malformed());
+            }
+            layout.validate_native_acceleration_binding(stage, space, start..end)?;
+        } else {
+            layout.validate_native_binding(stage, space, class, start..end)?;
+        }
     }
     Ok(())
 }

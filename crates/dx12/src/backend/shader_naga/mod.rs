@@ -23,7 +23,6 @@ pub(super) use dxil_visibility::{
     validate as validate_dxil_visibility, validate_r32_atomic_bindings, validate_r64uint_bindings,
 };
 pub(super) use layout_reflection::reflect;
-pub(super) use native_layout_reflection::validate_visibility as validate_native_visibility;
 use sampler_lowering::{lower_sampler_arrays, lower_scalar_samplers};
 #[path = "dxc.rs"]
 mod dxc;
