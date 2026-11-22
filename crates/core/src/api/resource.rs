@@ -511,6 +511,17 @@ pub struct PipelineLayoutDesc<'a, B: Backend> {
 pub struct PipelineLayoutDescription<B: Backend> {
     pub groups: Vec<BindGroupLayout<B>>,
     pub push_constants: Vec<PushConstantRange>,
+    /// Explicit native register assignments supplied during creation.
+    pub native_binding_registers: Vec<NativeBindingRegister>,
+}
+
+/// Maps a portable binding to a native register. The group is the native
+/// register space and the binding's type selects the native register class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeBindingRegister {
+    pub group: u32,
+    pub binding: u32,
+    pub register: u32,
 }
 
 /// Descriptor count supplied by the caller for a reflected runtime array.

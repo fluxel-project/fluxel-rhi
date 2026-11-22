@@ -16,6 +16,7 @@ use std::{
 };
 
 mod inference;
+mod pipeline_layout;
 mod volume_attachment;
 
 /// Data for one complete texture mip and aspect, including each layer or
@@ -670,78 +671,6 @@ impl<B: ResourceBackend> Device<B> {
         }
         // SAFETY: descriptor validation established one-device provenance before SPI creation.
         Ok(unsafe { BindGroup::from_native(self.id, B::create_bind_group(&self.native, desc)?) })
-    }
-    fn validate_pipeline_layout(&self, desc: &PipelineLayoutDesc<'_, B>) -> Result<()> {
-        if desc.groups.len() > self.caps.limits.max_bind_groups as usize {
-            return Err(Error::InvalidRange);
-        }
-        if desc.groups.iter().any(|v| v.device != self.id) {
-            return Err(Error::WrongDevice);
-        }
-        let uniform_limit = self
-            .caps
-            .limits
-            .max_dynamic_uniform_buffers_per_pipeline_layout;
-        let storage_limit = self
-            .caps
-            .limits
-            .max_dynamic_storage_buffers_per_pipeline_layout;
-        if uniform_limit != 0 || storage_limit != 0 {
-            let mut uniforms = 0usize;
-            let mut storage = 0usize;
-            for entry in desc.groups.iter().flat_map(|group| group.entries.iter()) {
-                match entry.ty {
-                    BindingType::UniformBuffer {
-                        dynamic_offset: true,
-                        ..
-                    } => uniforms += 1,
-                    BindingType::StorageBuffer {
-                        dynamic_offset: true,
-                        ..
-                    } => storage += 1,
-                    _ => {}
-                }
-            }
-            if (uniform_limit != 0 && uniforms > uniform_limit as usize)
-                || (storage_limit != 0 && storage > storage_limit as usize)
-            {
-                return Err(Error::InvalidRange);
-            }
-        }
-        if !desc.push_constants.is_empty() && !self.caps.push_constants {
-            return Err(Error::Unsupported("push constants"));
-        }
-        let push_constant_limit = self.caps.limits.max_push_constant_bytes;
-        if push_constant_limit != 0
-            && desc
-                .push_constants
-                .iter()
-                .any(|range| range.range.end > push_constant_limit)
-        {
-            return Err(Error::InvalidRange);
-        }
-        Ok(())
-    }
-    /// Checks the pipeline layout's combined binding and constant budgets
-    /// without creating a native pipeline layout.
-    pub fn pipeline_layout_support(&self, desc: &PipelineLayoutDesc<'_, B>) -> Result<()> {
-        self.validate_pipeline_layout(desc)?;
-        B::pipeline_layout_support(&self.native, desc)
-    }
-    pub fn create_pipeline_layout(
-        &self,
-        desc: &PipelineLayoutDesc<'_, B>,
-    ) -> Result<PipelineLayout<B>> {
-        self.validate_pipeline_layout(desc)?;
-        // SAFETY: every referenced layout was checked to belong to this device.
-        let mut layout = unsafe {
-            PipelineLayout::from_native(self.id, B::create_pipeline_layout(&self.native, desc)?)
-        };
-        layout.description = Some(Arc::new(PipelineLayoutDescription {
-            groups: desc.groups.iter().map(|&group| group.clone()).collect(),
-            push_constants: desc.push_constants.to_vec(),
-        }));
-        Ok(layout)
     }
 }
 

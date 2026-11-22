@@ -159,6 +159,20 @@ pub trait ResourceBackend: Backend {
     ) -> Result<()> {
         Err(Error::Unsupported("pipeline layout support query"))
     }
+    fn pipeline_layout_native_register_support(
+        _device: &Self::NativeDevice,
+        _desc: &PipelineLayoutDesc<'_, Self>,
+        _registers: &[NativeBindingRegister],
+    ) -> Result<()> {
+        Err(Error::Unsupported("native binding registers"))
+    }
+    fn create_pipeline_layout_with_native_registers(
+        _device: &Self::NativeDevice,
+        _desc: &PipelineLayoutDesc<'_, Self>,
+        _registers: &[NativeBindingRegister],
+    ) -> Result<Self::NativePipelineLayout> {
+        Err(Error::Unsupported("native binding registers"))
+    }
 }
 
 /// Cold shader operations: native direct route first, actual Naga frontend/output

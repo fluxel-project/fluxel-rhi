@@ -1053,10 +1053,15 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R06, OUT_OF_SCOPE — public Naga IR.** Compiler IR remains private. It would
   create a versioned public compiler contract without an RHI consumer. Reopen
   only for a demonstrated cross-backend compiler-tool contract.
-- **R07, DESIGNING — explicit native binding metadata.** Retain inference
-  only for unambiguous binding shapes. Define explicit register/view/immediate
-  metadata for HLSL/DXIL shapes reflection cannot distinguish, and test source,
-  DXIL, and conflicting-register admission separately.
+- **R07, IMPLEMENTING — explicit native binding metadata.** Retain inference
+  for unambiguous binding shapes. Explicit DX12 layouts can assign native
+  registers to logical bindings and keep the declared view type and constant
+  range. Verify identical register numbers across distinct b/t/u/s classes,
+  independent spaces, arrays and dynamic uniform descriptors. Reject duplicate
+  or missing assignments, overlapping same-class spans and collisions with
+  root constants. Exercise source and precompiled artifact pipelines under
+  different maps and check layout inspection and PSO cache identity.
+  Continue selected-export metadata and ambiguous native view coverage.
 - **R08, VERIFYING — WGSL subgroup identity, count, and barrier.** Keep only
   operations with exact native wave semantics. Invocation index arithmetic and
   collectives do not derive wave identity/count or memory ordering. Each new

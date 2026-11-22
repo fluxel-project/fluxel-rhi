@@ -6,6 +6,9 @@
 //! owns only the native root signature and its mapping metadata; it does not
 //! allocate descriptors or choose dynamic bindings at record time.
 use fluxel_rhi_core::api::{self, Error, Result};
+
+mod registers;
+use registers::{collect_native_registers, validate_native_register_ranges};
 use std::sync::Arc;
 use windows::Win32::Graphics::Direct3D12::*;
 
@@ -50,40 +53,6 @@ pub(crate) struct PipelineLayoutState {
     pub(crate) push_constants: Option<PushConstantsRoot>,
 }
 
-impl PipelineLayoutState {
-    pub(crate) fn has_stage_restricted_bindings(&self, stage: api::ShaderStage) -> bool {
-        self.binding_entries
-            .iter()
-            .any(|(_, entry)| !entry.visibility.contains(&stage))
-    }
-
-    pub(crate) fn validate_register_visibility(
-        &self,
-        stage: api::ShaderStage,
-        space: u32,
-        class: u8,
-        registers: std::ops::Range<u64>,
-    ) -> Result<()> {
-        for &(group, binding, register, register_class, count) in &self.register_map {
-            let register = u64::from(register);
-            if group == space
-                && register_class == class
-                && register < registers.end
-                && registers.start < register + u64::from(count)
-                && self.binding_entries.iter().any(|(space, entry)| {
-                    *space == group
-                        && entry.binding == binding
-                        && !entry.visibility.contains(&stage)
-                })
-            {
-                return Err(Error::Shader(format!(
-                    "DX12 binding {group}:{binding} is not visible to {stage:?}"
-                )));
-            }
-        }
-        Ok(())
-    }
-}
 pub(crate) struct PushConstantsRoot {
     graphics: Vec<(api::StageMask, u32)>,
     compute: Option<u32>,
@@ -150,13 +119,15 @@ struct PreparedLayout {
 pub(crate) fn pipeline_layout_support(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
+    registers: Option<&[api::NativeBindingRegister]>,
 ) -> Result<()> {
-    prepare_layout(device, desc).map(drop)
+    prepare_layout(device, desc, registers).map(drop)
 }
 
 fn prepare_layout(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
+    registers: Option<&[api::NativeBindingRegister]>,
 ) -> Result<PreparedLayout> {
     device.require_active()?;
     let slots = desc.groups.iter().flat_map(|layout| {
@@ -175,6 +146,7 @@ fn prepare_layout(
     let mut binding_entries = Vec::new();
     let mut runtime_binding_capacities = Vec::new();
     let mut native_abi_compatible = true;
+    let mut explicit = registers.map(collect_native_registers).transpose()?;
     for (group, layout) in desc.groups.iter().enumerate() {
         // SAFETY: the Core descriptor is tied to this device; this borrow is
         // used only while synchronously building an independent root signature.
@@ -196,11 +168,19 @@ fn prepare_layout(
                 descriptor::DescriptorClass::Uav => 2,
                 descriptor::DescriptorClass::Sampler => 3,
             };
-            let register = slot.binding.max(next_register[class]);
-            next_register[class] = register
+            let register = match &mut explicit {
+                Some(registers) => registers
+                    .remove(&(group as u32, slot.binding))
+                    .ok_or(Error::InvalidState)?,
+                None => slot.binding.max(next_register[class]),
+            };
+            let end = register
                 .checked_add(slot.descriptor_count)
                 .ok_or(Error::InvalidRange)?;
-            native_abi_compatible &= register == slot.binding;
+            if explicit.is_none() {
+                next_register[class] = end;
+                native_abi_compatible &= register == slot.binding;
+            }
             register_map.push((
                 group as u32,
                 slot.binding,
@@ -324,6 +304,12 @@ fn prepare_layout(
                 .collect(),
         });
     }
+    if let Some(remaining) = explicit {
+        if !remaining.is_empty() {
+            return Err(Error::InvalidState);
+        }
+        validate_native_register_ranges(&register_map)?;
+    }
     let mut compute_parameters = parameters.clone();
     let push_constants = if desc.push_constants.is_empty() {
         None
@@ -433,6 +419,7 @@ fn prepare_layout(
 pub(crate) fn create_pipeline_layout(
     device: &Dx12Device,
     desc: &api::PipelineLayoutDesc<'_, Dx12>,
+    registers: Option<&[api::NativeBindingRegister]>,
 ) -> Result<Dx12PipelineLayout> {
     let PreparedLayout {
         ranges: _ranges,
@@ -445,7 +432,7 @@ pub(crate) fn create_pipeline_layout(
         groups,
         tables,
         push_constants,
-    } = prepare_layout(device, desc)?;
+    } = prepare_layout(device, desc, registers)?;
     let (root, root_bytes) = create_root(device, &parameters, desc.label)?;
     let (compute_root, compute_root_bytes) = if push_constants.is_some() {
         create_root(device, &compute_parameters, desc.label)?

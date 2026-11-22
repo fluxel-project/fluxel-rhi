@@ -303,13 +303,27 @@ impl fluxel_rhi_core::backend::ResourceBackend for Dx12 {
         device: &Dx12Device,
         desc: &api::PipelineLayoutDesc<'_, Self>,
     ) -> Result<Dx12PipelineLayout> {
-        pipeline::create_pipeline_layout(device, desc)
+        pipeline::create_pipeline_layout(device, desc, None)
     }
     fn pipeline_layout_support(
         device: &Dx12Device,
         desc: &api::PipelineLayoutDesc<'_, Self>,
     ) -> Result<()> {
-        pipeline::pipeline_layout_support(device, desc)
+        pipeline::pipeline_layout_support(device, desc, None)
+    }
+    fn pipeline_layout_native_register_support(
+        device: &Dx12Device,
+        desc: &api::PipelineLayoutDesc<'_, Self>,
+        registers: &[api::NativeBindingRegister],
+    ) -> Result<()> {
+        pipeline::pipeline_layout_support(device, desc, Some(registers))
+    }
+    fn create_pipeline_layout_with_native_registers(
+        device: &Dx12Device,
+        desc: &api::PipelineLayoutDesc<'_, Self>,
+        registers: &[api::NativeBindingRegister],
+    ) -> Result<Dx12PipelineLayout> {
+        pipeline::create_pipeline_layout(device, desc, Some(registers))
     }
 }
 

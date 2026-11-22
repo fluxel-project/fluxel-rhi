@@ -68,6 +68,7 @@ device_features! {
     GpuUploadBuffers => gpu_upload_buffers, "gpu-upload-buffers";
     StorageTextures => storage_textures, "storage-textures";
     BindingArrays => binding_arrays, "binding-arrays";
+    NativeBindingRegisters => native_binding_registers, "native-binding-registers";
     RuntimeSizedBindingArrays => runtime_sized_binding_arrays, "runtime-sized-binding-arrays";
     Timestamp => timestamp, "timestamp";
     Occlusion => occlusion, "occlusion";

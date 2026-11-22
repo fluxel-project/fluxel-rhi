@@ -7,6 +7,8 @@ use std::sync::Arc;
 /// requires these flags to match the implemented optional backend domains.
 #[derive(Clone, Default)]
 pub struct DeviceCapabilities {
+    /// Pipeline layouts accept exact native register assignments.
+    pub native_binding_registers: bool,
     /// Pipeline layout descriptions can be derived from supported shader sources.
     pub shader_layout_inference: bool,
     /// Shader routes can use native half-precision floating-point values.
