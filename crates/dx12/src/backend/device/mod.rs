@@ -331,6 +331,7 @@ impl Dx12 {
             // mesh output. Keep this capability closed until the per-view
             // routing failure recorded in TODO N04 is resolved.
             let mesh_multiview = false;
+            let shading_rate = super::shading_rate::probe(&native);
             let lane = LaneId { device, ordinal: 0 };
             let compute_lane = LaneId { device, ordinal: 1 };
             let caps = DeviceCapabilities {
@@ -575,6 +576,7 @@ impl Dx12 {
                 residency_queue_waits: residency_device.is_some(),
                 multiview,
                 mesh_multiview,
+                shading_rate,
                 shader_view_index,
                 ..Default::default()
             };
@@ -638,6 +640,7 @@ impl Dx12 {
                     ray_query_supported,
                     mesh_supported,
                     mesh_multiview,
+                    shading_rate,
                     tiled_resources_tier,
                     residency_device,
                     resource_heap_tier2,

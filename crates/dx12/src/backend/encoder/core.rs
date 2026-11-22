@@ -153,6 +153,8 @@ pub struct Dx12Encoder {
     pub(crate) raster_depth_format: Option<api::TextureFormat>,
     pub(crate) raster_samples: Option<u32>,
     pub(crate) raster_multiview: Option<u32>,
+    pub(crate) shading_rate_list:
+        Option<windows::Win32::Graphics::Direct3D12::ID3D12GraphicsCommandList5>,
     /// Native BeginEvent/EndEvent nesting for the currently open command list.
     /// External queue boundaries close that list, so a group cannot cross one.
     pub(crate) debug_group_depth: u32,
@@ -339,6 +341,7 @@ impl Dx12Encoder {
             raster_depth_format: None,
             raster_samples: None,
             raster_multiview: None,
+            shading_rate_list: None,
             debug_group_depth: 0,
             closed: false,
         })

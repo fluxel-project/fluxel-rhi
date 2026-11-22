@@ -200,6 +200,10 @@ pub trait RasterBackend: CommandBackend {
     const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = false;
     /// Whether this backend can clear attachments inside an active raster pass.
     const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = false;
+    /// Sets a raster pass's per-draw rate. An error leaves recording unchanged.
+    fn set_shading_rate(_encoder: &mut Self::NativeEncoder, _rate: ShadingRate) -> Result<()> {
+        Err(Error::Unsupported("per-draw shading rate"))
+    }
     fn begin_raster(
         encoder: &mut Self::NativeEncoder,
         desc: &RasterPassDesc<'_, Self>,

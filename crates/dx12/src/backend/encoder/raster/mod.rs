@@ -80,6 +80,9 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
     }
     const DYNAMIC_DEPTH_BIAS_AVAILABLE: bool = true;
     const RECT_ATTACHMENT_CLEAR_AVAILABLE: bool = true;
+    fn set_shading_rate(encoder: &mut Dx12Encoder, rate: api::ShadingRate) -> Result<(), Error> {
+        super::super::shading_rate::set(encoder, rate)
+    }
     fn begin_raster(
         encoder: &mut Dx12Encoder,
         desc: &api::RasterPassDesc<'_, Self>,
@@ -522,6 +525,7 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
         }
         let state = encoder.raster_state.take().ok_or(Error::InvalidState)?;
         mrt::end(encoder, state)?;
+        super::super::shading_rate::reset(encoder);
         encoder.mesh_pipeline = None;
         encoder.pipeline = None;
         encoder.raster_snapshot.depth_bias = None;

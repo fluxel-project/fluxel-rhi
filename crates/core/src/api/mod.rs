@@ -39,6 +39,8 @@ mod ray;
 pub use ray::*;
 mod raster_extras;
 pub use raster_extras::*;
+mod shading_rate;
+pub use shading_rate::*;
 mod indirect_count_profile;
 pub use indirect_count_profile::*;
 mod submission;

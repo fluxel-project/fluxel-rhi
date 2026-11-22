@@ -612,6 +612,12 @@ when presenting to the display.
 
 ## Capability boundaries
 
+Per-draw shading rate uses `RSSetShadingRate` on devices that report native
+variable-rate shading. The active raster attachment sample count and the
+additional-rates bit qualify the request. D3D12 can select a finer rate under
+its shader and pipeline rules. At pass end the backend restores fine shading
+only when the caller used the feature.
+
 Timestamp queries can be recorded on the graphics or compute queue, between
 encoder commands or at a chosen position in a raster or compute pass. A
 pass-local timestamp measures the position after preceding commands,
