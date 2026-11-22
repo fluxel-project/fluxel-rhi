@@ -1,4 +1,4 @@
-//! Bounds the patched HLSL buffer-array route before lowering or specialization.
+//! Checks WGSL buffer and acceleration structure arrays before HLSL lowering.
 //!
 //! Resource-array selection is distinct from buffer member addressing. Only
 //! fixed compute arrays are admitted by this route; the existing specialization
@@ -61,8 +61,8 @@ fn uses_array_length(function: &naga::Function) -> bool {
         .any(|(_, expression)| matches!(expression, naga::Expression::ArrayLength(_)))
 }
 
-/// A fixed WGSL declaration must not borrow a larger runtime/partial layout's
-/// register span. Exact layout provenance is required even for static selectors.
+/// The buffer-array route requires fixed fully-bound layouts. Acceleration
+/// arrays can use native null descriptors and an explicit runtime capacity.
 pub(super) fn validate_bindings(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
@@ -79,7 +79,20 @@ pub(super) fn validate_bindings(
                         size: naga::ArraySize::Constant(size),
                         ..
                     },
-                ) => Some((handle, global, *size)),
+                ) => Some((handle, global, *size, false)),
+                (
+                    naga::AddressSpace::Handle,
+                    naga::TypeInner::BindingArray {
+                        base,
+                        size: naga::ArraySize::Constant(size),
+                    },
+                ) if matches!(
+                    module.types[*base].inner,
+                    naga::TypeInner::AccelerationStructure { .. }
+                ) =>
+                {
+                    Some((handle, global, *size, true))
+                }
                 _ => None,
             },
         )
@@ -87,14 +100,28 @@ pub(super) fn validate_bindings(
     if arrays.peek().is_none() {
         return Ok(());
     }
-    let nonuniform = nonuniform_buffers(module, info)?;
-    for (handle, global, size) in arrays {
+    let nonuniform = nonuniform_arrays(module, info)?;
+    for (handle, global, size, acceleration) in arrays {
         let binding = global.binding.as_ref().ok_or(Error::InvalidState)?;
         let entry = entries
             .iter()
             .find(|(group, entry)| *group == binding.group && entry.binding == binding.binding)
             .map(|(_, entry)| entry)
-            .ok_or(Error::Unsupported("DX12 WGSL buffer array layout metadata"))?;
+            .ok_or(Error::Unsupported("DX12 WGSL array layout metadata"))?;
+        if acceleration {
+            let capacity = match entry.count {
+                api::BindingCount::Fixed(count)
+                | api::BindingCount::RuntimeSized { max_count: count } => count,
+                api::BindingCount::One => 0,
+            };
+            if !matches!(entry.ty, api::BindingType::AccelerationStructure)
+                || capacity < size.get()
+                || (!entry.nonuniform_indexing && nonuniform.contains(&handle))
+            {
+                return Err(Error::Unsupported("DX12 WGSL acceleration array layout"));
+            }
+            continue;
+        }
         if entry.count != api::BindingCount::Fixed(size.get())
             || (!entry.nonuniform_indexing && nonuniform.contains(&handle))
             || entry.partially_bound
@@ -122,11 +149,11 @@ pub(super) fn validate_bindings(
     Ok(())
 }
 
-fn nonuniform_buffers(
+fn nonuniform_arrays(
     module: &naga::Module,
     info: &naga::valid::ModuleInfo,
 ) -> Result<HashSet<naga::Handle<naga::GlobalVariable>>> {
-    let mut buffers = HashSet::new();
+    let mut arrays = HashSet::new();
     let functions = module
         .functions
         .iter()
@@ -144,26 +171,23 @@ fn nonuniform_buffers(
             if facts[index].uniformity.non_uniform_result.is_none() {
                 continue;
             }
-            let naga::TypeInner::Pointer {
-                base: ty, space, ..
-            } = *facts[base].ty.inner_with(&module.types)
-            else {
-                continue;
-            };
-            if !matches!(
-                space,
-                naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }
-            ) || !matches!(module.types[ty].inner, naga::TypeInner::BindingArray { .. })
-            {
-                continue;
+            match *facts[base].ty.inner_with(&module.types) {
+                naga::TypeInner::Pointer {
+                    base: ty,
+                    space: naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. },
+                } if matches!(module.types[ty].inner, naga::TypeInner::BindingArray { .. }) => {}
+                naga::TypeInner::BindingArray { base, .. }
+                    if matches!(
+                        module.types[base].inner,
+                        naga::TypeInner::AccelerationStructure { .. }
+                    ) => {}
+                _ => continue,
             }
             let naga::Expression::GlobalVariable(global) = function.expressions[base] else {
-                return Err(Error::Unsupported(
-                    "DX12 indirect buffer binding array provenance",
-                ));
+                return Err(Error::Unsupported("DX12 indirect binding array provenance"));
             };
-            buffers.insert(global);
+            arrays.insert(global);
         }
     }
-    Ok(buffers)
+    Ok(arrays)
 }

@@ -462,6 +462,9 @@ record limit.
 **Status:** DXR devices with descriptor indexing support runtime and partially
 bound TLAS descriptor tables. Holes use the native null acceleration view.
 Resource admission rejects bottom-level structures before descriptor writes.
+The WGSL inline ray query route lowers fixed and runtime-sized TLAS arrays.
+Runtime declarations require a declared layout capacity, and divergent
+selectors require a nonuniform layout entry.
 
 **Acceptance:** Read back distinguishable results from multiple populated TLAS
 slots for fixed and runtime arrays, including nonuniform indexing and holes.

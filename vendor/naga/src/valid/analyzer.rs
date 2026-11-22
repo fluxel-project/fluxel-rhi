@@ -552,6 +552,9 @@ impl FunctionInfo {
                                 _ => st_sb,
                             },
                             crate::TypeInner::Sampler { .. } => sampler,
+                            crate::TypeInner::AccelerationStructure { .. } => {
+                                super::Capabilities::RAY_QUERY
+                            }
                             // If we're anything but an image, assume we're a buffer and use the address space.
                             _ => {
                                 if let E::GlobalVariable(global_handle) = expression_arena[base] {

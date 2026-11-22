@@ -573,7 +573,9 @@ fn compile_inner(
             naga::AddressSpace::Handle
                 if matches!(module.types[global.ty].inner,
                     naga::TypeInner::BindingArray { base, size: naga::ArraySize::Constant(_) }
-                    if matches!(module.types[base].inner, naga::TypeInner::Image { .. })) => {}
+                    if matches!(module.types[base].inner,
+                        naga::TypeInner::Image { .. } | naga::TypeInner::AccelerationStructure { .. })) =>
+                {}
             naga::AddressSpace::Handle
                 if matches!(
                     module.types[global.ty].inner,

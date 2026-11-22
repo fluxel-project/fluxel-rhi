@@ -476,6 +476,9 @@ from common to UAV and then to acceleration input. Invalid records use a
 zero traversal mask with an in-bounds fallback BLAS. With an empty table
 they use null instances. A refit cannot switch between these two table modes.
 TLAS publication keeps every possible BLAS target alive.
+WGSL inline ray queries can read fixed or layout-sized TLAS descriptor arrays.
+The shader requires a matching acceleration binding and a nonuniform layout
+entry for divergent selectors. Partially filled slots use native null SRVs.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and
