@@ -9,7 +9,7 @@ use super::*;
 const GPU_STAGES: u64 = api::StageMask::COPY.0
     | api::StageMask::INDIRECT.0
     | api::StageMask::VERTEX_INPUT.0
-    | api::StageMask::VERTEX.0
+    | CLASSIC_SHADER_STAGES.0
     | api::StageMask::FRAGMENT.0
     | api::StageMask::COLOR_OUTPUT.0
     | api::StageMask::COMPUTE.0
@@ -17,6 +17,10 @@ const GPU_STAGES: u64 = api::StageMask::COPY.0
     | api::StageMask::MESH.0
     | api::StageMask::RAY.0
     | api::StageMask::ACCELERATION.0;
+const CLASSIC_SHADER_STAGES: api::StageMask = api::StageMask::VERTEX
+    .union(api::StageMask::TESSELLATION_CONTROL)
+    .union(api::StageMask::TESSELLATION_EVALUATION)
+    .union(api::StageMask::GEOMETRY);
 const CORE_ACCESSES: u64 = api::AccessMask::HOST_READ.0
     | api::AccessMask::HOST_WRITE.0
     | api::AccessMask::COPY_READ.0
@@ -123,11 +127,9 @@ fn scope(
             api::StageMask::VERTEX_INPUT,
             D3D12_BARRIER_SYNC_INDEX_INPUT | D3D12_BARRIER_SYNC_VERTEX_SHADING,
         );
-        add_sync(
-            &mut sync,
-            api::StageMask::VERTEX,
-            D3D12_BARRIER_SYNC_VERTEX_SHADING,
-        );
+        if stages.0 & CLASSIC_SHADER_STAGES.0 != 0 {
+            sync |= D3D12_BARRIER_SYNC_VERTEX_SHADING;
+        }
         add_sync(
             &mut sync,
             api::StageMask::FRAGMENT,
@@ -285,7 +287,7 @@ fn enhanced_supported(device: &Dx12Device) -> bool {
 }
 
 fn legacy_uav(before: api::AccessScope, after: api::AccessScope) -> bool {
-    let shader_stages = api::StageMask::VERTEX
+    let shader_stages = CLASSIC_SHADER_STAGES
         | api::StageMask::FRAGMENT
         | api::StageMask::COMPUTE
         | api::StageMask::TASK

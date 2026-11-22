@@ -48,6 +48,9 @@ fn visit_bindings(
 ) -> Result<()> {
     let version_type = match stage {
         api::ShaderStage::Vertex => D3D12_SHVER_VERTEX_SHADER,
+        api::ShaderStage::Geometry => D3D12_SHVER_GEOMETRY_SHADER,
+        api::ShaderStage::TessellationControl => D3D12_SHVER_HULL_SHADER,
+        api::ShaderStage::TessellationEvaluation => D3D12_SHVER_DOMAIN_SHADER,
         api::ShaderStage::Fragment => D3D12_SHVER_PIXEL_SHADER,
         api::ShaderStage::Compute => D3D12_SHVER_COMPUTE_SHADER,
         _ => return Err(Error::Unsupported("DX12 native layout inference stage")),

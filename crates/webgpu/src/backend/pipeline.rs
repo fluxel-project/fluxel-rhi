@@ -279,6 +279,7 @@ fn raster_descriptor(
             api::PrimitiveTopology::LineStrip => "line-strip",
             api::PrimitiveTopology::TriangleList => "triangle-list",
             api::PrimitiveTopology::TriangleStrip => "triangle-strip",
+            _ => return Err(Error::Unsupported("WebGPU additional raster stages")),
         }),
     )?;
     field(

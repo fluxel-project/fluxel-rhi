@@ -412,6 +412,13 @@ impl<B: ResourceBackend> Device<B> {
                 return Err(Error::InvalidState);
             }
             last = Some(entry.binding);
+            if entry
+                .visibility
+                .iter()
+                .any(|&stage| !self.caps.supports_raster_stage(stage))
+            {
+                return Err(Error::Unsupported("raster stage visibility"));
+            }
             if let BindingType::UniformBuffer { min_size, .. } = entry.ty {
                 let limit = self.caps.limits.max_uniform_buffer_binding_size;
                 if limit != 0 && min_size > limit {

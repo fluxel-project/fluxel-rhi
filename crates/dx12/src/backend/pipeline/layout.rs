@@ -63,6 +63,9 @@ impl PushConstantsRoot {
     pub(super) fn has_stage(&self, stage: api::ShaderStage) -> bool {
         let mask = match stage {
             api::ShaderStage::Vertex => api::StageMask::VERTEX,
+            api::ShaderStage::Geometry => api::StageMask::GEOMETRY,
+            api::ShaderStage::TessellationControl => api::StageMask::TESSELLATION_CONTROL,
+            api::ShaderStage::TessellationEvaluation => api::StageMask::TESSELLATION_EVALUATION,
             api::ShaderStage::Fragment => api::StageMask::FRAGMENT,
             api::ShaderStage::Compute => return self.compute.is_some(),
             api::ShaderStage::Task => api::StageMask::TASK,
@@ -354,6 +357,11 @@ fn prepare_layout(
             for stage in &entry.stages {
                 let bit = match stage {
                     api::ShaderStage::Vertex => api::StageMask::VERTEX,
+                    api::ShaderStage::Geometry => api::StageMask::GEOMETRY,
+                    api::ShaderStage::TessellationControl => api::StageMask::TESSELLATION_CONTROL,
+                    api::ShaderStage::TessellationEvaluation => {
+                        api::StageMask::TESSELLATION_EVALUATION
+                    }
                     api::ShaderStage::Fragment => api::StageMask::FRAGMENT,
                     api::ShaderStage::Compute => api::StageMask::COMPUTE,
                     api::ShaderStage::Task => api::StageMask::TASK,
@@ -391,6 +399,15 @@ fn prepare_layout(
         let mut graphics = Vec::new();
         for (stage, visibility) in [
             (api::StageMask::VERTEX, D3D12_SHADER_VISIBILITY_VERTEX),
+            (api::StageMask::GEOMETRY, D3D12_SHADER_VISIBILITY_GEOMETRY),
+            (
+                api::StageMask::TESSELLATION_CONTROL,
+                D3D12_SHADER_VISIBILITY_HULL,
+            ),
+            (
+                api::StageMask::TESSELLATION_EVALUATION,
+                D3D12_SHADER_VISIBILITY_DOMAIN,
+            ),
             (api::StageMask::FRAGMENT, D3D12_SHADER_VISIBILITY_PIXEL),
             (api::StageMask::TASK, D3D12_SHADER_VISIBILITY_AMPLIFICATION),
             (api::StageMask::MESH, D3D12_SHADER_VISIBILITY_MESH),

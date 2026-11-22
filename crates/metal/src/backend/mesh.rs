@@ -659,7 +659,7 @@ async fn create(
             layout,
             vertex_buffer_base: 31,
             view_count: None,
-            primitive_type: p::primitive_type(desc.primitive.topology),
+            primitive_type: p::primitive_type(desc.primitive.topology)?,
             polygon_mode: desc.primitive.polygon_mode,
             unclipped_depth: desc.primitive.unclipped_depth,
             strip_index_format: desc.primitive.strip_index_format,

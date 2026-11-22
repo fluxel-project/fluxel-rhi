@@ -20,7 +20,9 @@ use super::fixed::{Attachments, depth_format, lower_attachments, lower_depth, st
 use super::{PipelineLayoutState, create_raster_pso_stream};
 
 mod admission;
+mod stages;
 use admission::{AdmittedRaster, AdmittedStage};
+use stages::AdditionalStages;
 
 pub(crate) struct RasterPipelineState {
     compilation_diagnostics: Vec<api::PipelineShaderDiagnostics>,
@@ -50,17 +52,36 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
         desc: &api::RasterPipelineDesc<Dx12>,
     ) -> Result<()> {
         let admitted = admission::admit(device, desc)?;
-        if let Some(required) = admitted.attachments.dual_source {
-            let fragment = admitted
-                .fragment
-                .map(|fragment| stage(fragment, admitted.layout, device.0.shader_model))
-                .transpose()?;
-            super::super::shader_naga::validate_dual_source_outputs(
-                fragment.as_ref().map(|(bytes, ..)| bytes.as_slice()),
-                required,
-            )?;
-        }
-        Ok(())
+        check_dual_source(device, &admitted)
+    }
+    fn raster_pipeline_with_stages_support(
+        device: &Dx12Device,
+        desc: &api::RasterPipelineWithStagesDesc<Dx12>,
+    ) -> Result<()> {
+        let admitted = admission::admit(device, &desc.raster)?;
+        let stages = AdditionalStages::admit(device, desc, &admitted)?;
+        stages.compile(
+            admitted.layout,
+            device.0.shader_model,
+            desc.raster.primitive,
+        )?;
+        check_dual_source(device, &admitted)
+    }
+    fn create_raster_pipeline_with_stages(
+        device: &Dx12Device,
+        desc: &api::RasterPipelineWithStagesDesc<Dx12>,
+    ) -> impl std::future::Future<Output = Result<Dx12RasterPipeline>> {
+        let device = device.clone();
+        let desc = desc.clone();
+        super::worker::submit(move || {
+            create_raster(
+                &device,
+                &desc.raster,
+                desc.dynamic_depth_bias,
+                desc.stencil_masks,
+                Some(&desc),
+            )
+        })
     }
     fn raster_compilation_diagnostics(
         pipeline: &Dx12RasterPipeline,
@@ -87,7 +108,7 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
     ) -> Self::RasterPipelineFuture<'a> {
         let device = (*device).clone();
         let desc = (*desc).clone();
-        super::worker::submit(move || create_raster(&device, &desc, dynamic_depth_bias, None))
+        super::worker::submit(move || create_raster(&device, &desc, dynamic_depth_bias, None, None))
     }
     fn create_raster_pipeline_with_stencil_masks(
         device: &Dx12Device,
@@ -98,9 +119,24 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
         let device = device.clone();
         let desc = desc.clone();
         super::worker::submit(move || {
-            create_raster(&device, &desc, dynamic_depth_bias, Some(masks))
+            create_raster(&device, &desc, dynamic_depth_bias, Some(masks), None)
         })
     }
+}
+
+fn check_dual_source(device: &Dx12Device, admitted: &AdmittedRaster<'_>) -> Result<()> {
+    if let Some(required) = admitted.attachments.dual_source {
+        let fragment = admitted
+            .fragment
+            .as_ref()
+            .map(|fragment| stage(fragment, admitted.layout, device.0.shader_model))
+            .transpose()?;
+        super::super::shader_naga::validate_dual_source_outputs(
+            fragment.as_ref().map(|(bytes, ..)| bytes.as_slice()),
+            required,
+        )?;
+    }
+    Ok(())
 }
 
 fn create_raster(
@@ -108,6 +144,7 @@ fn create_raster(
     desc: &api::RasterPipelineDesc<Dx12>,
     dynamic_depth_bias: Option<api::DynamicDepthBias>,
     masks: Option<api::StencilMasks>,
+    with_stages: Option<&api::RasterPipelineWithStagesDesc<Dx12>>,
 ) -> Result<Dx12RasterPipeline> {
     if masks.is_some() && !device.0.stencil_reference_per_face {
         return Err(Error::Unsupported("DX12 per-face stencil masks"));
@@ -115,6 +152,16 @@ fn create_raster(
     if dynamic_depth_bias.is_some() && !device.0.dynamic_depth_bias_supported {
         return Err(Error::Unsupported("DX12 dynamic depth bias"));
     }
+    let admitted = admission::admit(device, desc)?;
+    let additional = with_stages
+        .map(|desc| {
+            AdditionalStages::admit(device, desc, &admitted)?.compile(
+                admitted.layout,
+                device.0.shader_model,
+                desc.raster.primitive,
+            )
+        })
+        .transpose()?;
     let AdmittedRaster {
         layout,
         vertex,
@@ -123,7 +170,7 @@ fn create_raster(
         vertex_strides,
         elements,
         mut raster,
-    } = admission::admit(device, desc)?;
+    } = admitted;
     let Attachments {
         depth,
         dual_source,
@@ -136,8 +183,9 @@ fn create_raster(
         return Err(Error::Unsupported("DX12 Stencil8 has no depth bias"));
     }
     let (vs, mut raw_storage_bindings, vertex_index_constants, vertex_report) =
-        stage(vertex, layout, device.0.shader_model)?;
+        stage(&vertex, layout, device.0.shader_model)?;
     let ps = fragment
+        .as_ref()
         .map(|stage_desc| stage(stage_desc, layout, device.0.shader_model))
         .transpose()?;
     if let Some(required) = dual_source {
@@ -212,6 +260,9 @@ fn create_raster(
         },
         ..Default::default()
     };
+    if let Some(stages) = &additional {
+        stages.set_bytecode(&mut pso);
+    }
     if dynamic_depth_bias.is_some() {
         pso.Flags = D3D12_PIPELINE_STATE_FLAG_DYNAMIC_DEPTH_BIAS;
     }
@@ -231,14 +282,28 @@ fn create_raster(
     let cache = desc.cache.as_ref().map(|c| unsafe { c.native_ref() });
     let key = cache
         .map(|_| {
-            super::cache::key(&[
-                b"raster-v1",
-                root_bytes,
-                &vs,
-                ps.as_ref()
-                    .map_or(&[][..], |(bytes, _, _, _)| bytes.as_slice()),
-                settings.as_bytes(),
-            ])
+            let fragment_bytes = ps.as_ref().map_or(&[][..], |(bytes, ..)| bytes.as_slice());
+            if let Some(stages) = &additional {
+                let [hull, domain, geometry] = stages.bytecode();
+                super::cache::key(&[
+                    b"raster-stages-v1",
+                    root_bytes,
+                    &vs,
+                    fragment_bytes,
+                    hull,
+                    domain,
+                    geometry,
+                    settings.as_bytes(),
+                ])
+            } else {
+                super::cache::key(&[
+                    b"raster-v1",
+                    root_bytes,
+                    &vs,
+                    fragment_bytes,
+                    settings.as_bytes(),
+                ])
+            }
         })
         .transpose()?;
     let cached = match (cache, key.as_ref()) {
@@ -301,6 +366,11 @@ fn create_raster(
     }
     let compilation_diagnostics = vertex_report
         .into_iter()
+        .chain(
+            additional
+                .into_iter()
+                .flat_map(|stages| stages.diagnostics()),
+        )
         .chain(ps.and_then(|(_, _, _, report)| report))
         .collect();
     Ok(Dx12RasterPipeline(Arc::new(RasterPipelineState {
@@ -328,16 +398,18 @@ fn create_raster(
     })))
 }
 
-fn stage(
-    admitted: AdmittedStage<'_>,
-    layout: &super::layout::PipelineLayoutState,
-    shader_model: u16,
-) -> Result<(
+type CompiledStage = (
     Vec<u8>,
     Vec<(u32, u32)>,
     bool,
     Option<api::PipelineShaderDiagnostics>,
-)> {
+);
+
+fn stage(
+    admitted: &AdmittedStage<'_>,
+    layout: &super::layout::PipelineLayoutState,
+    shader_model: u16,
+) -> Result<CompiledStage> {
     let AdmittedStage {
         desc: s,
         shader: n,
@@ -477,9 +549,11 @@ fn vertex_format(v: api::VertexFormat) -> Result<DXGI_FORMAT> {
 fn topology(v: api::PrimitiveTopology) -> D3D12_PRIMITIVE_TOPOLOGY_TYPE {
     match v {
         api::PrimitiveTopology::PointList => D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
-        api::PrimitiveTopology::LineList | api::PrimitiveTopology::LineStrip => {
-            D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE
-        }
+        api::PrimitiveTopology::LineList
+        | api::PrimitiveTopology::LineStrip
+        | api::PrimitiveTopology::LineListAdjacency
+        | api::PrimitiveTopology::LineStripAdjacency => D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+        api::PrimitiveTopology::PatchList(_) => D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH,
         _ => D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
     }
 }
@@ -490,6 +564,13 @@ fn native_topology(v: api::PrimitiveTopology) -> D3D_PRIMITIVE_TOPOLOGY {
         api::PrimitiveTopology::LineStrip => D3D_PRIMITIVE_TOPOLOGY_LINESTRIP,
         api::PrimitiveTopology::TriangleList => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
         api::PrimitiveTopology::TriangleStrip => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP,
+        api::PrimitiveTopology::LineListAdjacency => D3D_PRIMITIVE_TOPOLOGY_LINELIST_ADJ,
+        api::PrimitiveTopology::LineStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_LINESTRIP_ADJ,
+        api::PrimitiveTopology::TriangleListAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST_ADJ,
+        api::PrimitiveTopology::TriangleStripAdjacency => D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP_ADJ,
+        api::PrimitiveTopology::PatchList(points) => D3D_PRIMITIVE_TOPOLOGY(
+            D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST.0 - 1 + points as i32,
+        ),
     }
 }
 

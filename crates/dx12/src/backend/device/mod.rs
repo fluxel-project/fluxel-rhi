@@ -25,7 +25,7 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS,
     D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE,
     D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX,
-    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX,
+    D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX, D3D12_IA_PATCH_MAX_CONTROL_POINT_COUNT,
     D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, D3D12_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT,
     D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH,
     D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE,
@@ -466,6 +466,9 @@ impl Dx12 {
                 compute: true,
                 multi_queue: true,
                 mesh: mesh_supported,
+                geometry_shader: shader_model >= 60,
+                max_tessellation_patch_control_points: (shader_model >= 60)
+                    .then_some(D3D12_IA_PATCH_MAX_CONTROL_POINT_COUNT),
                 mesh_multi_indirect: mesh_supported,
                 mesh_indirect_count: mesh_supported,
                 sparse: tiled_resources_tier != D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED,

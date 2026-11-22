@@ -428,7 +428,7 @@ async fn create_raster_pipeline(
             layout,
             vertex_buffer_base,
             view_count: desc.multiview,
-            primitive_type: primitive_type(desc.primitive.topology),
+            primitive_type: primitive_type(desc.primitive.topology)?,
             polygon_mode: desc.primitive.polygon_mode,
             unclipped_depth: desc.primitive.unclipped_depth,
             strip_index_format: desc.primitive.strip_index_format,
@@ -535,16 +535,19 @@ fn inert_stencil_face(face: api::StencilFaceState) -> bool {
 }
 
 #[cfg(target_vendor = "apple")]
-pub(super) fn primitive_type(value: api::PrimitiveTopology) -> objc2_metal::MTLPrimitiveType {
+pub(super) fn primitive_type(
+    value: api::PrimitiveTopology,
+) -> api::Result<objc2_metal::MTLPrimitiveType> {
     use api::PrimitiveTopology as P;
     use objc2_metal::MTLPrimitiveType as M;
-    match value {
+    Ok(match value {
         P::PointList => M::Point,
         P::LineList => M::Line,
         P::LineStrip => M::LineStrip,
         P::TriangleList => M::Triangle,
         P::TriangleStrip => M::TriangleStrip,
-    }
+        _ => return Err(api::Error::Unsupported("Metal additional raster stages")),
+    })
 }
 
 #[cfg(target_vendor = "apple")]

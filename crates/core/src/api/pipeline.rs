@@ -4,6 +4,8 @@
 //! policy belong to callers or backends, not this portable contract.
 #![allow(missing_docs, dead_code, unused_variables, unused_imports)]
 use super::*;
+mod stages;
+pub use stages::{RasterPipelineWithStagesDesc, TessellationStages};
 use std::{
     collections::HashSet,
     future::Future,
@@ -22,6 +24,25 @@ pub enum PrimitiveTopology {
     LineStrip,
     TriangleList,
     TriangleStrip,
+    LineListAdjacency,
+    LineStripAdjacency,
+    TriangleListAdjacency,
+    TriangleStripAdjacency,
+    /// Patch-list input with an explicit number of control points per patch.
+    PatchList(u32),
+}
+
+impl PrimitiveTopology {
+    pub(super) fn requires_additional_stages(self) -> bool {
+        matches!(
+            self,
+            Self::LineListAdjacency
+                | Self::LineStripAdjacency
+                | Self::TriangleListAdjacency
+                | Self::TriangleStripAdjacency
+                | Self::PatchList(_)
+        )
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub enum IndexFormat {
@@ -300,6 +321,9 @@ impl<B: PipelineBackend> Device<B> {
     /// Checks the ordinary raster pipeline descriptor before shader compilation.
     /// Specialization, signature linkage and native pipeline creation can still fail.
     pub fn raster_pipeline_support(&self, desc: &RasterPipelineDesc<B>) -> Result<()> {
+        if desc.primitive.topology.requires_additional_stages() {
+            return Err(Error::InvalidState);
+        }
         self.validate_raster_pipeline_desc(desc)?;
         B::raster_pipeline_support(&self.native, desc)
     }
@@ -356,6 +380,9 @@ impl<B: PipelineBackend> Device<B> {
         dynamic_depth_bias: Option<DynamicDepthBias>,
         stencil_masks: Option<StencilMasks>,
     ) -> Result<RasterPipeline<B>> {
+        if desc.primitive.topology.requires_additional_stages() {
+            return Err(Error::InvalidState);
+        }
         if let Some(bias) = dynamic_depth_bias {
             self.validate_dynamic_depth_bias(&desc, bias)?;
         }

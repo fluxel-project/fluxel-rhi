@@ -7,6 +7,7 @@
 mod binding;
 mod buffer_array;
 mod diagnostics;
+mod dxil_classic;
 mod dxil_container;
 mod dxil_library;
 mod dxil_mesh;
@@ -16,6 +17,7 @@ mod layout_reflection;
 mod native_layout_reflection;
 mod sampler_lowering;
 pub(super) use dxc::compile_ray_library;
+pub(super) use dxil_classic::validate_classic_linkage;
 pub(super) use dxil_container::{
     validate_atomic_dxil, validate_dual_source_outputs, validate_sampler_feedback_model,
     validate_typed_int64_atomics,
@@ -77,6 +79,9 @@ pub(crate) fn hlsl_profile(stage: api::ShaderStage, model: u16) -> Result<String
     }
     let stage = match stage {
         api::ShaderStage::Vertex => "vs",
+        api::ShaderStage::Geometry => "gs",
+        api::ShaderStage::TessellationControl => "hs",
+        api::ShaderStage::TessellationEvaluation => "ds",
         api::ShaderStage::Fragment => "ps",
         api::ShaderStage::Compute => "cs",
         _ => return Err(Error::Unsupported("DX12 HLSL shader stage")),

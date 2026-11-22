@@ -179,12 +179,7 @@ pub(crate) fn texture_state(
                 if uses.stages.contains(api::StageMask::FRAGMENT) {
                     state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
                 }
-                if uses.stages.contains(api::StageMask::VERTEX)
-                    || uses.stages.contains(api::StageMask::TASK)
-                    || uses.stages.contains(api::StageMask::MESH)
-                    || uses.stages.contains(api::StageMask::COMPUTE)
-                    || uses.stages.contains(api::StageMask::RAY)
-                {
+                if uses.stages.0 & NON_PIXEL_SHADER_STAGES.0 != 0 {
                     state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 }
                 if state == D3D12_RESOURCE_STATE_DEPTH_READ {
@@ -201,12 +196,7 @@ pub(crate) fn texture_state(
                 return Err(Error::Unsupported("DX12 ShaderReadOnly layout access"));
             }
             let mut state = windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATES(0);
-            if uses.stages.contains(api::StageMask::VERTEX)
-                || uses.stages.contains(api::StageMask::TASK)
-                || uses.stages.contains(api::StageMask::MESH)
-                || uses.stages.contains(api::StageMask::COMPUTE)
-                || uses.stages.contains(api::StageMask::RAY)
-            {
+            if uses.stages.0 & NON_PIXEL_SHADER_STAGES.0 != 0 {
                 state |= windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             }
             if uses.stages.contains(api::StageMask::FRAGMENT) {
@@ -222,14 +212,17 @@ pub(crate) fn texture_state(
     }
 }
 
+const NON_PIXEL_SHADER_STAGES: api::StageMask = api::StageMask::VERTEX
+    .union(api::StageMask::TESSELLATION_CONTROL)
+    .union(api::StageMask::TESSELLATION_EVALUATION)
+    .union(api::StageMask::GEOMETRY)
+    .union(api::StageMask::COMPUTE)
+    .union(api::StageMask::TASK)
+    .union(api::StageMask::MESH)
+    .union(api::StageMask::RAY);
+
 fn has_shader_stage(stages: api::StageMask) -> bool {
-    let shader_stages = api::StageMask::VERTEX
-        .union(api::StageMask::FRAGMENT)
-        .union(api::StageMask::COMPUTE)
-        .union(api::StageMask::TASK)
-        .union(api::StageMask::MESH)
-        .union(api::StageMask::RAY);
-    stages.0 & shader_stages.0 != 0
+    stages.0 & (NON_PIXEL_SHADER_STAGES.0 | api::StageMask::FRAGMENT.0) != 0
 }
 
 /// Lowers the graph-selected whole-buffer use into the corresponding D3D12
@@ -293,12 +286,7 @@ pub(crate) fn buffer_state(
         if uses.stages.contains(api::StageMask::FRAGMENT) {
             shader_state |= D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         }
-        if uses.stages.contains(api::StageMask::VERTEX)
-            || uses.stages.contains(api::StageMask::COMPUTE)
-            || uses.stages.contains(api::StageMask::TASK)
-            || uses.stages.contains(api::StageMask::MESH)
-            || uses.stages.contains(api::StageMask::RAY)
-        {
+        if uses.stages.0 & NON_PIXEL_SHADER_STAGES.0 != 0 {
             shader_state |= D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         }
         if shader_state.0 == 0 {

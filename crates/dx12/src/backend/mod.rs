@@ -377,6 +377,18 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if device.0.shader_model < 60
+            && desc.entries.iter().any(|entry| {
+                matches!(
+                    entry.stage,
+                    api::ShaderStage::Geometry
+                        | api::ShaderStage::TessellationControl
+                        | api::ShaderStage::TessellationEvaluation
+                )
+            })
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if !device.0.mesh_supported
             && desc
                 .entries
@@ -706,7 +718,12 @@ fn direct_hlsl_entries_supported(device: &Dx12Device, desc: &api::ShaderDesc, mo
         && desc.entries.iter().all(|entry| {
             matches!(
                 entry.stage,
-                api::ShaderStage::Compute | api::ShaderStage::Vertex | api::ShaderStage::Fragment
+                api::ShaderStage::Compute
+                    | api::ShaderStage::Vertex
+                    | api::ShaderStage::Fragment
+                    | api::ShaderStage::Geometry
+                    | api::ShaderStage::TessellationControl
+                    | api::ShaderStage::TessellationEvaluation
             ) || (ray_library && ray::pipeline::is_ray_stage(entry.stage))
         })
 }

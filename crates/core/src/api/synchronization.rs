@@ -31,6 +31,9 @@ impl StageMask {
     pub const MESH: Self = Self(1 << 9);
     pub const RAY: Self = Self(1 << 10);
     pub const ACCELERATION: Self = Self(1 << 11);
+    pub const TESSELLATION_CONTROL: Self = Self(1 << 12);
+    pub const TESSELLATION_EVALUATION: Self = Self(1 << 13);
+    pub const GEOMETRY: Self = Self(1 << 14);
     pub const ALL_COMMANDS: Self = Self(u64::MAX);
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

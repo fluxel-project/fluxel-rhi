@@ -274,6 +274,7 @@ pub(crate) fn create_raster(
         api::PrimitiveTopology::LineStrip => vk::PrimitiveTopology::LINE_STRIP,
         api::PrimitiveTopology::TriangleList => vk::PrimitiveTopology::TRIANGLE_LIST,
         api::PrimitiveTopology::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+        _ => return Err(Error::Unsupported("Vulkan additional raster stages")),
     };
     validate_primitive(device, &desc.primitive, desc.depth_stencil.as_ref())?;
     if desc.primitive.strip_index_format.is_some()

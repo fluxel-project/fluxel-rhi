@@ -20,6 +20,7 @@ pub(crate) fn lower_primitive(
         PrimitiveTopology::LineStrip => GlPrimitiveTopology::LineStrip,
         PrimitiveTopology::TriangleList => GlPrimitiveTopology::Triangles,
         PrimitiveTopology::TriangleStrip => GlPrimitiveTopology::TriangleStrip,
+        _ => return Err(api::Error::Unsupported("GL additional raster stages")),
     };
     let cull = match value.cull_mode {
         CullMode::None => GlCullMode::None,

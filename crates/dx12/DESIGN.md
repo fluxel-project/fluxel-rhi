@@ -637,6 +637,16 @@ unordered-access and resolve dependencies and consumes the feedback. Decoding
 writes ordinary R8Uint texels for copy and readback. Recorded work retains the
 map, paired image, destination, and descriptor owners it uses.
 
+Classic raster pipelines can opt into a geometry shader, a tessellation
+control/evaluation pair, or both. These stage chains use native HLSL or
+DXIL on devices with SM 6.0 or newer. DXIL PSV metadata checks the
+selected stage, register visibility, patch counts and domain, and the
+geometry input primitive. D3D12 validates native signature linkage when
+creating the PSO. Patch input uses the matching 1–32 control point
+topology at draw time. Point, line, triangle, and adjacency topologies use
+their exact input assembler modes. The stage bytecode contributes to the
+PSO cache key and the caller orders stage resource access explicitly.
+
 Timestamp queries can be recorded on the graphics or compute queue, between
 encoder commands or at a chosen position in a raster or compute pass. A
 pass-local timestamp measures the position after preceding commands,

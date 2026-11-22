@@ -2,7 +2,7 @@
 
 use super::{
     CooperativeMatrixConfiguration, IndirectCountProfile, LaneInfo, SamplerFeedbackTier,
-    ShadingRateCapabilities, TextureFormat,
+    ShaderStage, ShadingRateCapabilities, TextureFormat,
 };
 use std::sync::Arc;
 
@@ -48,6 +48,10 @@ pub struct DeviceCapabilities {
     pub compute: bool,
     pub sparse: bool,
     pub mesh: bool,
+    /// Classic raster pipelines may contain a native geometry stage.
+    pub geometry_shader: bool,
+    /// Maximum input control points per tessellation patch, when supported.
+    pub max_tessellation_patch_control_points: Option<u32>,
     /// Acceleration structure sizing, creation, and build operations.
     pub acceleration_structure: bool,
     /// In-place updates of previously built acceleration structures.
@@ -292,6 +296,16 @@ pub struct DeviceCapabilities {
 }
 
 impl DeviceCapabilities {
+    pub(crate) fn supports_raster_stage(&self, stage: ShaderStage) -> bool {
+        match stage {
+            ShaderStage::Geometry => self.geometry_shader,
+            ShaderStage::TessellationControl | ShaderStage::TessellationEvaluation => {
+                self.max_tessellation_patch_control_points.is_some()
+            }
+            _ => true,
+        }
+    }
+
     pub(crate) fn unsupported_planar_format_reason(
         &self,
         format: TextureFormat,

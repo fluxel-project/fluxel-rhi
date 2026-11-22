@@ -207,6 +207,13 @@ pub enum ShaderRoute {
 
 impl<B: ShaderBackend> Device<B> {
     pub fn shader_route(&self, desc: &ShaderDesc) -> ShaderRoute {
+        if desc
+            .entries
+            .iter()
+            .any(|entry| !self.caps.supports_raster_stage(entry.stage))
+        {
+            return ShaderRoute::Unsupported;
+        }
         let compute_only = !desc.entries.is_empty()
             && desc
                 .entries

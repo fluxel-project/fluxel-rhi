@@ -33,7 +33,10 @@ pub(super) fn admit<'a>(
     if desc.primitive.strip_index_format.is_some()
         && !matches!(
             desc.primitive.topology,
-            api::PrimitiveTopology::LineStrip | api::PrimitiveTopology::TriangleStrip
+            api::PrimitiveTopology::LineStrip
+                | api::PrimitiveTopology::TriangleStrip
+                | api::PrimitiveTopology::LineStripAdjacency
+                | api::PrimitiveTopology::TriangleStripAdjacency
         )
     {
         return Err(Error::InvalidState);
@@ -117,7 +120,7 @@ pub(super) fn admit<'a>(
     })
 }
 
-fn admit_stage<'a>(
+pub(super) fn admit_stage<'a>(
     desc: &'a api::PipelineStage<Dx12>,
     need: api::ShaderStage,
     layout: &PipelineLayoutState,

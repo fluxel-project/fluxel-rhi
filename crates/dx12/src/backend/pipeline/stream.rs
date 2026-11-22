@@ -67,6 +67,15 @@ pub(crate) fn create_raster_pso_stream(
     );
     push(&mut bytes, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, pso.VS);
     push(&mut bytes, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, pso.PS);
+    for (tag, shader) in [
+        (D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS, pso.HS),
+        (D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS, pso.DS),
+        (D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS, pso.GS),
+    ] {
+        if shader.BytecodeLength != 0 {
+            push(&mut bytes, tag, shader);
+        }
+    }
     push(
         &mut bytes,
         D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND,

@@ -1383,11 +1383,17 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   including descriptor range and stage checks. Layout inference requires a
   reliable source for the shader's feedback mode. WGSL has no standard
   sampler feedback operation.
-- **R24c, DESIGNING — geometry and tessellation stages.** Define shader-stage
-  linkage, reflection, pipeline ABI, limits, and DXIL/HLSL/WGSL route facts.
-  Verify geometry-shader amplification and hull/domain patch evaluation with
-  separate outputs. Microsoft's PC DX12 Bézier sample supplies a tessellation
-  reference. [SimpleBezierPC12](https://github.com/microsoft/Xbox-ATG-Samples/tree/ff629a6e4876e38fe8761ead116a0e53f634ca67/PCSamples/IntroGraphics/SimpleBezierPC12)
+- **R24c, VERIFYING — geometry and tessellation stages.** Core exposes
+  native geometry and paired tessellation stages with explicit patch size
+  or adjacency topology. DX12 HLSL and DXIL readback verified geometry
+  amplification and distinct factor-one and factor-four patch output.
+  Add permanent coverage for adjacency, combined stages, resource visibility,
+  and the PSO stream path. Conservative rasterization with patch or
+  non-triangle IA topology remains deferred. Reopen with debug-layer and
+  coverage evidence for the native PSO/rasterizer combination. WGSL has no
+  standard geometry or tessellation stages. The Microsoft Bézier sample
+  supplies a tessellation reference.
+  [SimpleBezierPC12](https://github.com/microsoft/Xbox-ATG-Samples/tree/ff629a6e4876e38fe8761ead116a0e53f634ca67/PCSamples/IntroGraphics/SimpleBezierPC12)
 - **R24d, DESIGNING — programmable sample positions.** Define tier gate,
   sample-position descriptors, pipeline/pass compatibility, and lifetime.
   Test a repeated one-pixel pattern on tier 1 and a four-pixel pattern on

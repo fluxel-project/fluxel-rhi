@@ -309,6 +309,11 @@ fn stages(stages: &[api::ShaderStage]) -> Result<vk::ShaderStageFlags> {
     for stage in stages {
         flags |= match stage {
             api::ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
+            api::ShaderStage::Geometry
+            | api::ShaderStage::TessellationControl
+            | api::ShaderStage::TessellationEvaluation => {
+                return Err(Error::Unsupported("Vulkan additional raster stages"));
+            }
             api::ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
             api::ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
             api::ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,

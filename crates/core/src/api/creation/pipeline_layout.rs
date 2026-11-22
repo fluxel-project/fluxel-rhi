@@ -43,6 +43,14 @@ impl<B: ResourceBackend> Device<B> {
         if !desc.push_constants.is_empty() && !self.caps.push_constants {
             return Err(Error::Unsupported("push constants"));
         }
+        if desc
+            .push_constants
+            .iter()
+            .flat_map(|range| &range.stages)
+            .any(|&stage| !self.caps.supports_raster_stage(stage))
+        {
+            return Err(Error::Unsupported("raster stage visibility"));
+        }
         let push_constant_limit = self.caps.limits.max_push_constant_bytes;
         if push_constant_limit != 0
             && desc

@@ -22,6 +22,9 @@ pub(super) fn requested(desc: &api::ShaderDesc) -> bool {
 fn stage(stage: api::ShaderStage) -> vk::ShaderStageFlags {
     match stage {
         api::ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
+        api::ShaderStage::TessellationControl => vk::ShaderStageFlags::TESSELLATION_CONTROL,
+        api::ShaderStage::TessellationEvaluation => vk::ShaderStageFlags::TESSELLATION_EVALUATION,
+        api::ShaderStage::Geometry => vk::ShaderStageFlags::GEOMETRY,
         api::ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
         api::ShaderStage::Compute => vk::ShaderStageFlags::COMPUTE,
         api::ShaderStage::Task => vk::ShaderStageFlags::TASK_EXT,

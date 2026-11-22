@@ -225,6 +225,18 @@ pub trait PipelineBackend: Backend {
     ) -> &[PipelineShaderDiagnostics] {
         &[]
     }
+    fn raster_pipeline_with_stages_support(
+        _device: &Self::NativeDevice,
+        _desc: &RasterPipelineWithStagesDesc<Self>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("additional raster stages"))
+    }
+    fn create_raster_pipeline_with_stages(
+        _device: &Self::NativeDevice,
+        _desc: &RasterPipelineWithStagesDesc<Self>,
+    ) -> impl Future<Output = Result<Self::NativeRasterPipeline>> {
+        std::future::ready(Err(Error::Unsupported("additional raster stages")))
+    }
     fn vertex_format_support(_device: &Self::NativeDevice, _format: VertexFormat) -> Result<()> {
         Err(Error::Unsupported("vertex format support query"))
     }

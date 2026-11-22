@@ -42,6 +42,12 @@ The public namespace, [`src/api/`](src/api/), contains the API a renderer uses:
 
 Core owns the common meaning of those operations and validates their portable preconditions. It does not own a window or canvas, render-graph construction, resource-use inference, hazard analysis, automatic transitions, frame pacing, or resource-retirement policy. Those are intentionally renderer or host responsibilities.
 
+Classic raster extensions use a separate pipeline descriptor for geometry
+and tessellation. Tessellation supplies the control and evaluation stages
+together with the input patch size. Adjacency topology belongs to input
+assembly. The opened device reports stage availability and the patch limit,
+and stage visibility and synchronization use the same explicit stage names.
+
 ## Architecture inside the crate
 
 ```text

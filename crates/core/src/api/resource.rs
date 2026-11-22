@@ -364,6 +364,9 @@ pub struct SamplerDesc {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ShaderStage {
     Vertex,
+    TessellationControl,
+    TessellationEvaluation,
+    Geometry,
     Fragment,
     Compute,
     Task,

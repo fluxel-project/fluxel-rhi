@@ -220,6 +220,9 @@ pub(in crate::backend) fn validate_r64uint_bindings(
 fn resource_rows(bytes: &[u8], stage: ShaderStage) -> Result<core::slice::ChunksExact<'_, u8>> {
     let expected_kind = match stage {
         ShaderStage::Vertex => D3D12_SHVER_VERTEX_SHADER,
+        ShaderStage::Geometry => D3D12_SHVER_GEOMETRY_SHADER,
+        ShaderStage::TessellationControl => D3D12_SHVER_HULL_SHADER,
+        ShaderStage::TessellationEvaluation => D3D12_SHVER_DOMAIN_SHADER,
         ShaderStage::Fragment => D3D12_SHVER_PIXEL_SHADER,
         ShaderStage::Compute => D3D12_SHVER_COMPUTE_SHADER,
         ShaderStage::Mesh => D3D12_SHVER_MESH_SHADER,

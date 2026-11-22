@@ -317,6 +317,9 @@ pub(crate) fn usage(
     }
     let model = match stage {
         api::ShaderStage::Vertex => 0,
+        api::ShaderStage::TessellationControl => 1,
+        api::ShaderStage::TessellationEvaluation => 2,
+        api::ShaderStage::Geometry => 3,
         api::ShaderStage::Fragment => 4,
         api::ShaderStage::Compute => 5,
         api::ShaderStage::Task => 5364,
