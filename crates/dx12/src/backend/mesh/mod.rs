@@ -255,6 +255,9 @@ fn admit_pipeline<'a>(
         .as_ref()
         .map(|s| shader(s, api::ShaderStage::Fragment))
         .transpose()?;
+    if let Some(required) = attachments.dual_source {
+        super::shader_naga::validate_dual_source_outputs(fragment, required)?;
+    }
     // SAFETY: Core checked layout provenance and the descriptor keeps it alive.
     let layout = &unsafe { desc.layout.native_ref() }.0;
     if !layout.native_abi_compatible {
@@ -309,6 +312,7 @@ pub(super) fn create_pipeline(
         depth,
         formats,
         blends,
+        ..
     } = attachments;
     let depth_state = fixed::lower_depth(depth);
     // SAFETY: Core validates that the cache belongs to the same device.

@@ -14,7 +14,9 @@ mod immediates;
 mod layout_reflection;
 mod native_layout_reflection;
 mod sampler_lowering;
-pub(super) use dxil_container::{validate_atomic_dxil, validate_typed_int64_atomics};
+pub(super) use dxil_container::{
+    validate_atomic_dxil, validate_dual_source_outputs, validate_typed_int64_atomics,
+};
 pub(super) use dxil_library::validate_export as validate_dxil_library_export;
 pub(super) use dxil_visibility::{
     validate as validate_dxil_visibility, validate_r32_atomic_bindings, validate_r64uint_bindings,

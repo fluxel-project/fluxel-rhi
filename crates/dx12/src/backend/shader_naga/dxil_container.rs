@@ -6,6 +6,64 @@ use fluxel_rhi_core::api::{Error, Result};
 const CONTAINER_HEADER_SIZE: usize = 32;
 const PART_HEADER_SIZE: usize = 8;
 
+/// Verify the selected pixel program's written dual-source output registers.
+pub(in crate::backend) fn validate_dual_source_outputs(
+    bytes: Option<&[u8]>,
+    required: [u8; 2],
+) -> Result<()> {
+    use windows::Win32::Graphics::Direct3D12::D3D12_SHVER_PIXEL_SHADER;
+    // DxilProgramSignature and DxilProgramSignatureElement from DxilContainer.h.
+    const SIGNATURE_HEADER_SIZE: usize = 8;
+    const ELEMENT_SIZE: usize = 32;
+    const TARGET: u32 = 64;
+    let missing =
+        || Error::Unsupported("DX12 dual-source blend requires written SV_Target0 and SV_Target1");
+    let (program, signature) = parts(bytes.ok_or_else(missing)?, *b"OSG1")?;
+    if word(program, 0)? >> 16 != D3D12_SHVER_PIXEL_SHADER.0 as u32 {
+        return Err(Error::Shader(
+            "DX12 dual-source blend requires a pixel program".into(),
+        ));
+    }
+    let signature = signature.ok_or_else(missing)?;
+    let count = word(signature, 0)? as usize;
+    let offset = word(signature, 4)? as usize;
+    if offset < SIGNATURE_HEADER_SIZE {
+        return Err(malformed());
+    }
+    let size = count.checked_mul(ELEMENT_SIZE).ok_or_else(malformed)?;
+    let elements = signature
+        .get(offset..)
+        .and_then(|data| data.get(..size))
+        .ok_or_else(malformed)?;
+    let mut written = [0u8; 2];
+    for element in elements.chunks_exact(ELEMENT_SIZE) {
+        let mask = element[24] & !element[25] & 0xf;
+        if word(element, 12)? != TARGET || mask == 0 {
+            continue;
+        }
+        let index = word(element, 8)?;
+        if index > 1 {
+            return Err(Error::Unsupported(
+                "DX12 dual-source blend permits only color outputs 0 and 1",
+            ));
+        }
+        written[index as usize] |= mask;
+    }
+    if written.contains(&0) {
+        return Err(missing());
+    }
+    if written
+        .into_iter()
+        .zip(required)
+        .any(|(written, required)| written & required != required)
+    {
+        return Err(Error::Unsupported(
+            "DX12 dual-source fragment outputs omit a component used by blending",
+        ));
+    }
+    Ok(())
+}
+
 /// Qualify a precompiled program declaring native SM 6.6 compute atomics.
 pub(in crate::backend) fn validate_atomic_dxil(bytes: &[u8], maximum_model: u16) -> Result<()> {
     let (program, _) = parts(bytes, *b"PSV0")?;

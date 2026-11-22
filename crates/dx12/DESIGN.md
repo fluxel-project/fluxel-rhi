@@ -282,6 +282,13 @@ load and rectangular clears, use the selected RTV. Render-pass MSAA resolves
 use matching typed 2D views and write only the render-area rectangle.
 Typeless allocations are admitted through compatible typed views.
 
+Dual-source blending uses a single color target at slot zero. WGSL
+`dual_source_blending` emits the two sources as `SV_Target0` and
+`SV_Target1`. Pipeline admission checks the selected pixel program's DXIL
+output signature for the channels used by blending. A raster support
+query with dual-source blending compiles the selected fragment source
+when needed to obtain that signature, without creating a PSO.
+
 Storage texture allocation and view creation require a typed UAV and at
 least one typed access. Bind-group layout support and creation require the
 typed load bit for read, the typed store bit for write, and both bits for

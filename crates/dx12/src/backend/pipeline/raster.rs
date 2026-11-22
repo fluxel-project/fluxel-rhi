@@ -49,7 +49,18 @@ impl fluxel_rhi_core::backend::PipelineBackend for Dx12 {
         device: &Dx12Device,
         desc: &api::RasterPipelineDesc<Dx12>,
     ) -> Result<()> {
-        admission::admit(device, desc).map(drop)
+        let admitted = admission::admit(device, desc)?;
+        if let Some(required) = admitted.attachments.dual_source {
+            let fragment = admitted
+                .fragment
+                .map(|fragment| stage(fragment, admitted.layout, device.0.shader_model))
+                .transpose()?;
+            super::super::shader_naga::validate_dual_source_outputs(
+                fragment.as_ref().map(|(bytes, ..)| bytes.as_slice()),
+                required,
+            )?;
+        }
+        Ok(())
     }
     fn raster_compilation_diagnostics(
         pipeline: &Dx12RasterPipeline,
@@ -115,6 +126,7 @@ fn create_raster(
     } = admission::admit(device, desc)?;
     let Attachments {
         depth,
+        dual_source,
         formats,
         blends,
     } = attachments;
@@ -128,6 +140,12 @@ fn create_raster(
     let ps = fragment
         .map(|stage_desc| stage(stage_desc, layout, device.0.shader_model))
         .transpose()?;
+    if let Some(required) = dual_source {
+        super::super::shader_naga::validate_dual_source_outputs(
+            ps.as_ref().map(|(bytes, ..)| bytes.as_slice()),
+            required,
+        )?;
+    }
     if let Some((_, bindings, _, _)) = &ps {
         raw_storage_bindings.extend(bindings);
     }

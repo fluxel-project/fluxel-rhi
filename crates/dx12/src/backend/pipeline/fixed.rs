@@ -49,8 +49,61 @@ fn validate_depth(state: Option<api::DepthStencilState>) -> Result<Option<api::D
 
 pub(crate) struct Attachments {
     pub(crate) depth: Option<api::DepthStencilState>,
+    pub(crate) dual_source: Option<[u8; 2]>,
     pub(crate) formats: [DXGI_FORMAT; COLOR_SLOTS],
     pub(crate) blends: [D3D12_RENDER_TARGET_BLEND_DESC; COLOR_SLOTS],
+}
+
+fn uses_dual_source(blend: api::BlendState) -> bool {
+    [
+        blend.color.src_factor,
+        blend.color.dst_factor,
+        blend.alpha.src_factor,
+        blend.alpha.dst_factor,
+    ]
+    .into_iter()
+    .any(api::BlendFactor::uses_secondary_source)
+}
+
+fn dual_source_outputs(target: &api::ColorTargetState, alpha_to_coverage: bool) -> Option<[u8; 2]> {
+    use api::{BlendFactor as Factor, TextureFormat::*};
+    let blend = target.blend.filter(|&blend| uses_dual_source(blend))?;
+    let channels = match target.format {
+        R8Unorm | R8Snorm | R8Uint | R8Sint | R16Unorm | R16Snorm | R16Uint | R16Sint
+        | R16Float | R32Uint | R32Sint | R32Float => 0b0001,
+        Rg8Unorm | Rg8Snorm | Rg8Uint | Rg8Sint | Rg16Unorm | Rg16Snorm | Rg16Uint | Rg16Sint
+        | Rg16Float | Rg32Uint | Rg32Sint | Rg32Float => 0b0011,
+        Rg11b10Ufloat | Rgb9e5Ufloat => 0b0111,
+        _ => 0b1111,
+    };
+    const ALPHA: u8 = 0b1000;
+    let writes = target.write_mask & channels;
+    let rgb = writes & !ALPHA;
+    let mut first = writes;
+    let mut second = 0;
+    if alpha_to_coverage {
+        first |= ALPHA;
+    }
+    if rgb != 0 {
+        for factor in [blend.color.src_factor, blend.color.dst_factor] {
+            match factor {
+                Factor::SrcAlpha | Factor::OneMinusSrcAlpha | Factor::SrcAlphaSaturated => {
+                    first |= ALPHA
+                }
+                Factor::Src1 | Factor::OneMinusSrc1 => second |= rgb,
+                Factor::Src1Alpha | Factor::OneMinusSrc1Alpha => second |= ALPHA,
+                _ => {}
+            }
+        }
+    }
+    if writes & ALPHA != 0
+        && [blend.alpha.src_factor, blend.alpha.dst_factor]
+            .into_iter()
+            .any(Factor::uses_secondary_source)
+    {
+        second |= ALPHA;
+    }
+    Some([first, second])
 }
 
 pub(crate) fn lower_attachments(
@@ -82,6 +135,10 @@ pub(crate) fn lower_attachments(
     let (formats, blends) = lower_targets(device, targets, multisample.count)?;
     Ok(Attachments {
         depth,
+        dual_source: targets
+            .first()
+            .and_then(Option::as_ref)
+            .and_then(|target| dual_source_outputs(target, multisample.alpha_to_coverage_enabled)),
         formats,
         blends,
     })
@@ -128,15 +185,7 @@ fn lower_targets(
             return Err(Error::Unsupported("DX12 color attachment sample count"));
         }
         if let Some(blend) = target.blend {
-            let dual_source = [
-                blend.color.src_factor,
-                blend.color.dst_factor,
-                blend.alpha.src_factor,
-                blend.alpha.dst_factor,
-            ]
-            .into_iter()
-            .any(api::BlendFactor::uses_secondary_source);
-            if dual_source && (index != 0 || targets.len() != 1) {
+            if uses_dual_source(blend) && (index != 0 || targets.len() != 1) {
                 return Err(Error::Unsupported(
                     "DX12 dual source blend with multiple targets",
                 ));

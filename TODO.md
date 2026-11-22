@@ -23,6 +23,13 @@ and typeless allocations. Reject mismatched view formats and integer
 color average resolves. Reopen integer resolve when an explicit integer
 resolve mode has defined cross-backend semantics.
 
+### DX12 dual-source blending
+
+Verify standard WGSL `blend_src(0/1)`, HLSL, and stripped DXIL with one
+color target. Read back independent RGB and alpha factors. Reject a missing
+second output, an unwritten alpha consumed by the blend, additional color
+outputs, and incompatible target slots in both support and pipeline creation.
+
 ### DX12 device limit verification
 
 **Status:** Raster and mesh pipelines and raster pass recording use the
