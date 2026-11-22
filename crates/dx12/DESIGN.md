@@ -356,6 +356,9 @@ numbers. Same-class ranges in a space must be disjoint and must avoid the
 root constant register when that register is in use. Descriptor table order
 and dynamic offsets still follow logical bindings. The serialized root
 signature carries the assignment into the PSO cache key.
+Single-program HLSL and DXIL check that explicit maps cover their native
+register spans at the selected stage. An unbounded range uses a layout
+runtime capacity at the same class, space, and base register.
 
 ## Recording, submission, and completion
 

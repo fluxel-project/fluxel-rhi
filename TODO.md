@@ -1062,7 +1062,9 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   independent spaces, arrays and dynamic uniform descriptors. Reject duplicate
   or missing assignments, overlapping same-class spans and collisions with
   root constants. Exercise source and precompiled artifact pipelines under
-  different maps and check layout inspection and PSO cache identity.
+  different maps and check layout inspection and PSO cache identity. For
+  explicit maps, reject uncovered shader register spans and unbounded
+  ranges without a runtime capacity at their exact start register.
   For DXIL libraries, verify exact and unambiguous export names, shader kinds,
   malformed RDAT, and missing exports. Keep explicit native view coverage
   and resource visibility through library call graphs as separate checks.

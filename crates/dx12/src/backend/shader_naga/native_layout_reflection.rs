@@ -48,7 +48,7 @@ pub(in crate::backend) fn validate_visibility(
     stage: api::ShaderStage,
     layout: &PipelineLayoutState,
 ) -> Result<()> {
-    if !layout.has_stage_restricted_bindings(stage) {
+    if !layout.requires_native_binding_validation(stage) {
         return Ok(());
     }
     visit_bindings(bytes, stage, |_, resource| {
@@ -58,7 +58,7 @@ pub(in crate::backend) fn validate_visibility(
             0 | u32::MAX => u64::from(u32::MAX) + 1,
             count => start + u64::from(count),
         };
-        layout.validate_register_visibility(stage, resource.Space, class, start..end)
+        layout.validate_native_binding(stage, resource.Space, class, start..end)
     })
 }
 

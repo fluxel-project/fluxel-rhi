@@ -17,7 +17,7 @@ pub(in crate::backend) fn validate(
     stage: ShaderStage,
     layout: &PipelineLayoutState,
 ) -> Result<()> {
-    if !layout.has_stage_restricted_bindings(stage) {
+    if !layout.requires_native_binding_validation(stage) {
         return Ok(());
     }
     let expected_kind = match stage {
@@ -68,7 +68,7 @@ pub(in crate::backend) fn validate(
         if start >= end {
             return Err(malformed());
         }
-        layout.validate_register_visibility(stage, space, class, start..end)?;
+        layout.validate_native_binding(stage, space, class, start..end)?;
     }
     Ok(())
 }

@@ -46,6 +46,7 @@ pub(crate) struct PipelineLayoutState {
     /// accepted for that different public contract.
     pub(crate) runtime_binding_capacities: Vec<(u32, u32, u32)>,
     pub(crate) native_abi_compatible: bool,
+    pub(crate) explicit_native_registers: bool,
     pub(crate) groups: Vec<Arc<descriptor::BindGroupLayoutState>>,
     /// One root CBV table parameter per logical group.  Group ordinal is both
     /// this vector's index and the HLSL register space used for its ranges.
@@ -59,6 +60,17 @@ pub(crate) struct PushConstantsRoot {
     ranges: Vec<(std::ops::Range<u32>, api::StageMask)>,
 }
 impl PushConstantsRoot {
+    pub(super) fn has_stage(&self, stage: api::ShaderStage) -> bool {
+        let mask = match stage {
+            api::ShaderStage::Vertex => api::StageMask::VERTEX,
+            api::ShaderStage::Fragment => api::StageMask::FRAGMENT,
+            api::ShaderStage::Compute => return self.compute.is_some(),
+            api::ShaderStage::Task => api::StageMask::TASK,
+            api::ShaderStage::Mesh => api::StageMask::MESH,
+            _ => return false,
+        };
+        self.graphics.iter().any(|&(stage, _)| stage == mask)
+    }
     pub(crate) fn covers(&self, stage: api::StageMask, start: u32, end: u32) -> bool {
         (start..end).step_by(4).all(|offset| {
             self.ranges.iter().any(|(range, mask)| {
@@ -492,6 +504,7 @@ pub(crate) fn create_pipeline_layout(
         binding_entries,
         runtime_binding_capacities,
         native_abi_compatible,
+        explicit_native_registers: registers.is_some(),
         groups,
         tables,
         push_constants,
