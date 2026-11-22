@@ -283,6 +283,32 @@ alignment and raw or structured buffer binding. Check rejection for an
 unsupported address space, lower shader profiles, non-compute programs,
 and a declared shader model above the device limit.
 
+### DX12 floating-point atomics, memory qualifiers, and cooperative matrix
+
+**Floating-point atomics.** Native HLSL/DXIL can perform bitwise float
+exchange and compare-exchange. DXC compiled those operations to integer
+bit-pattern atomics. The public Float32 arithmetic add/min/max capabilities
+remain closed on DX12. The native model supplies bitwise operations, and
+an implicit compare-exchange loop would add contention-dependent work
+and require a defined NaN and signed-zero policy. Reopen for an exact
+native arithmetic operation or an explicit shader lowering contract with
+numerical and contention evidence.
+[D3D12 atomic operation specification](https://microsoft.github.io/DirectX-Specs/d3d/HLSL_SM_6_6_Int64_and_Float_Atomics.html)
+
+**Memory qualifiers.** Direct HLSL and DXIL retain native resource qualifiers
+such as HLSL `globallycoherent`. Verify cross-workgroup visibility with the
+shader's own barriers and the caller's explicit queue and resource
+synchronization. SPIR-V Coherent and Volatile remain unavailable on DX12.
+Reopen only with an artifact route that defines equivalent access,
+scope, and ordering and can prove those semantics in readback.
+
+**Cooperative matrix.** Defer the DX12 capability. The installed DXC rejects
+`cs_6_10` and the current Windows bindings lack the linear algebra capability
+queries. The native runtime draft defines distinct support by operation,
+scope, types, and shape. Reopen when the supported compiler, SDK, and driver
+can query exact tuples and run readback for layout, stride and saturation.
+[D3D12 linear algebra runtime specification](https://microsoft.github.io/DirectX-Specs/d3d/D3D12LinearAlgebraRuntimeFeatureSupport.html)
+
 ### DX12 view descriptor roles
 
 For a combined depth/stencil texture, verify that a default single-plane
