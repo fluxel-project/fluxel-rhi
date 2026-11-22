@@ -108,43 +108,43 @@ pub const SHADER_FEATURE_FLOAT32_ATOMIC_WORKGROUP_MAX: &str = "float32-atomic-wo
 pub const SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MIN: &str = "float32-atomic-buffer-min";
 /// Direct SPIR-V compute Float32 storage-buffer atomic maximum.
 pub const SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_MAX: &str = "float32-atomic-buffer-max";
-/// Direct SPIR-V compute Int64 storage-buffer atomic add.
+/// Native compute Int64 storage-buffer atomic add.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_ADD: &str = "int64-atomic-buffer-add";
-/// Direct SPIR-V compute Int64 signed atomic min on storage-buffer memory.
+/// Native compute Int64 signed atomic min on storage-buffer memory.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_MIN: &str = "int64-atomic-buffer-min";
-/// Direct SPIR-V compute Int64 storage-buffer signed atomic maximum.
+/// Native compute Int64 storage-buffer signed atomic maximum.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_MAX: &str = "int64-atomic-buffer-max";
-/// Direct SPIR-V compute Int64 storage-buffer unsigned atomic minimum.
+/// Native compute Int64 storage-buffer unsigned atomic minimum.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_UMIN: &str = "int64-atomic-buffer-umin";
-/// Direct SPIR-V compute Int64 storage-buffer unsigned atomic maximum.
+/// Native compute Int64 storage-buffer unsigned atomic maximum.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_UMAX: &str = "int64-atomic-buffer-umax";
-/// Direct SPIR-V compute Int64 storage-buffer atomic bitwise XOR.
+/// Native compute Int64 storage-buffer atomic bitwise XOR.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_XOR: &str = "int64-atomic-buffer-xor";
-/// Direct SPIR-V compute Int64 storage-buffer atomic compare-exchange.
+/// Native compute Int64 storage-buffer atomic compare-exchange.
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_COMPARE_EXCHANGE: &str =
     "int64-atomic-buffer-compare-exchange";
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_EXCHANGE: &str = "int64-atomic-buffer-exchange";
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_AND: &str = "int64-atomic-buffer-and";
 pub const SHADER_FEATURE_INT64_ATOMIC_BUFFER_OR: &str = "int64-atomic-buffer-or";
-/// Direct SPIR-V compute Int64 workgroup/shared atomic add.
+/// Native compute Int64 workgroup/shared atomic add.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_ADD: &str = "int64-atomic-workgroup-add";
-/// Direct SPIR-V compute Int64 workgroup/shared signed atomic min.
+/// Native compute Int64 workgroup/shared signed atomic min.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_MIN: &str = "int64-atomic-workgroup-min";
-/// Direct SPIR-V compute Int64 workgroup/shared signed atomic max.
+/// Native compute Int64 workgroup/shared signed atomic max.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_MAX: &str = "int64-atomic-workgroup-max";
 /// 64-bit integer atomic XOR in workgroup memory.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_XOR: &str = "int64-atomic-workgroup-xor";
-/// Direct SPIR-V compute Int64 workgroup/shared atomic AND.
+/// Native compute Int64 workgroup/shared atomic AND.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_AND: &str = "int64-atomic-workgroup-and";
-/// Direct SPIR-V compute Int64 workgroup/shared atomic OR.
+/// Native compute Int64 workgroup/shared atomic OR.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_OR: &str = "int64-atomic-workgroup-or";
-/// Direct SPIR-V compute Int64 workgroup/shared unsigned atomic minimum.
+/// Native compute Int64 workgroup/shared unsigned atomic minimum.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_UMIN: &str = "int64-atomic-workgroup-umin";
-/// Direct SPIR-V compute Int64 workgroup/shared unsigned atomic maximum.
+/// Native compute Int64 workgroup/shared unsigned atomic maximum.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_UMAX: &str = "int64-atomic-workgroup-umax";
-/// Direct SPIR-V compute Int64 workgroup/shared atomic exchange.
+/// Native compute Int64 workgroup/shared atomic exchange.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_EXCHANGE: &str = "int64-atomic-workgroup-exchange";
-/// Direct SPIR-V compute Int64 workgroup/shared atomic compare-exchange.
+/// Native compute Int64 workgroup/shared atomic compare-exchange.
 pub const SHADER_FEATURE_INT64_ATOMIC_WORKGROUP_COMPARE_EXCHANGE: &str =
     "int64-atomic-workgroup-compare-exchange";
 /// Direct SPIR-V compute atomic add on a non-array, single-sample 2D R64Uint image.

@@ -90,46 +90,46 @@ pub struct DeviceCapabilities {
     pub shader_float32_atomic_buffer_min: bool,
     /// Direct SPIR-V compute `OpAtomicFMaxEXT` on Float32 storage-buffer memory.
     pub shader_float32_atomic_buffer_max: bool,
-    /// Direct SPIR-V compute shaders may use signed or unsigned Int64
-    /// `OpAtomicIAdd` on storage-buffer memory. Other operations are separate.
+    /// Native compute shaders may use signed or unsigned Int64
+    /// atomic add on storage-buffer memory. Other operations are separate.
     pub shader_int64_atomic_buffer_add: bool,
-    /// Direct SPIR-V compute `OpAtomicSMin` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic signed min on storage-buffer memory.
     pub shader_int64_atomic_buffer_min: bool,
-    /// Direct SPIR-V compute `OpAtomicSMax` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic signed max on storage-buffer memory.
     pub shader_int64_atomic_buffer_max: bool,
-    /// Direct SPIR-V compute `OpAtomicUMin` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic unsigned min on storage-buffer memory.
     pub shader_int64_atomic_buffer_umin: bool,
-    /// Direct SPIR-V compute `OpAtomicUMax` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic unsigned max on storage-buffer memory.
     pub shader_int64_atomic_buffer_umax: bool,
-    /// Direct SPIR-V compute `OpAtomicXor` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic XOR on storage-buffer memory.
     pub shader_int64_atomic_buffer_xor: bool,
-    /// Direct SPIR-V compute `OpAtomicCompareExchange` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic compare-exchange on storage-buffer memory.
     pub shader_int64_atomic_buffer_compare_exchange: bool,
-    /// Direct SPIR-V compute `OpAtomicExchange` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic exchange on storage-buffer memory.
     pub shader_int64_atomic_buffer_exchange: bool,
-    /// Direct SPIR-V compute `OpAtomicAnd` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic AND on storage-buffer memory.
     pub shader_int64_atomic_buffer_and: bool,
-    /// Direct SPIR-V compute `OpAtomicOr` on Int64 storage-buffer memory.
+    /// Native compute Int64 atomic OR on storage-buffer memory.
     pub shader_int64_atomic_buffer_or: bool,
-    /// Direct SPIR-V compute `OpAtomicIAdd` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic add on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_add: bool,
-    /// Direct SPIR-V compute `OpAtomicSMin` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic signed min on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_min: bool,
-    /// Direct SPIR-V compute `OpAtomicSMax` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic signed max on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_max: bool,
-    /// Direct SPIR-V compute `OpAtomicXor` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic XOR on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_xor: bool,
-    /// Direct SPIR-V compute `OpAtomicAnd` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic AND on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_and: bool,
-    /// Direct SPIR-V compute `OpAtomicOr` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic OR on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_or: bool,
-    /// Direct SPIR-V compute `OpAtomicUMin` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic unsigned min on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_umin: bool,
-    /// Direct SPIR-V compute `OpAtomicUMax` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic unsigned max on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_umax: bool,
-    /// Direct SPIR-V compute `OpAtomicExchange` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic exchange on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_exchange: bool,
-    /// Direct SPIR-V compute `OpAtomicCompareExchange` on Int64 workgroup/shared memory.
+    /// Native compute Int64 atomic compare-exchange on workgroup/shared memory.
     pub shader_int64_atomic_workgroup_compare_exchange: bool,
     /// Direct SPIR-V compute shaders may use `OpAtomicIAdd` on non-array,
     /// single-sample 2D R64Uint storage images.

@@ -337,6 +337,13 @@ WGSL pipeline compilation checks each active resource against the selected
 stage's bind-group layout visibility. It checks scalar and array bindings
 before native PSO creation or cache lookup.
 
+Native compute Int64 atomics use Shader Model 6.6 or newer and require
+Int64 shader operations. Raw and structured UAV buffers use the descriptor
+heap atomic capability from OPTIONS11. Workgroup atomics require the
+separate group-shared capability from OPTIONS9. Direct HLSL and single
+compute DXIL can declare the corresponding operation and address space.
+Callers provide correctly aligned offsets and record synchronization.
+
 WGSL vertex and instance indices include the draw's starting offsets.
 Shader Model 6.8 vertex programs add `SV_StartVertexLocation` and
 `SV_StartInstanceLocation` to the corresponding native IDs. They use

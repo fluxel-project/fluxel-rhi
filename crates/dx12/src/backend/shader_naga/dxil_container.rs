@@ -6,6 +6,21 @@ use fluxel_rhi_core::api::{Error, Result};
 const CONTAINER_HEADER_SIZE: usize = 32;
 const PART_HEADER_SIZE: usize = 8;
 
+/// Qualify a precompiled program declaring native SM 6.6 compute atomics.
+pub(in crate::backend) fn validate_atomic_dxil(bytes: &[u8], maximum_model: u16) -> Result<()> {
+    let (program, _) = parts(bytes, *b"PSV0")?;
+    let version = word(program, 0)?;
+    let stage = version >> 16;
+    let compute = windows::Win32::Graphics::Direct3D12::D3D12_SHVER_COMPUTE_SHADER.0 as u32;
+    let model = (((version >> 4) & 0xf) * 10 + (version & 0xf)) as u16;
+    if stage != compute || !(66..=maximum_model).contains(&model) {
+        return Err(Error::Unsupported(
+            "DX12 Int64 atomics require compute DXIL at SM 6.6 or newer",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn parts(bytes: &[u8], tag: [u8; 4]) -> Result<(&[u8], Option<&[u8]>)> {
     if !bytes.starts_with(b"DXBC") {
         return Err(malformed());

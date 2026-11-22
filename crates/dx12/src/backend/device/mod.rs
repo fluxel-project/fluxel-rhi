@@ -145,6 +145,8 @@ impl Dx12 {
             .is_ok();
             let shader_int64 =
                 shader_model >= 60 && options1_available && wave.Int64ShaderOps.as_bool();
+            let int64_atomics =
+                shader_atomics::Int64AtomicSupport::query(&native, shader_model, shader_int64);
             let subgroup_widths = (shader_model >= 60
                 && options1_available
                 && wave.WaveOps.as_bool()
@@ -332,6 +334,26 @@ impl Dx12 {
                 shader_i16: native_16bit_shader_ops,
                 shader_f64,
                 shader_int64,
+                shader_int64_atomic_buffer_add: int64_atomics.buffer,
+                shader_int64_atomic_buffer_min: int64_atomics.buffer,
+                shader_int64_atomic_buffer_max: int64_atomics.buffer,
+                shader_int64_atomic_buffer_umin: int64_atomics.buffer,
+                shader_int64_atomic_buffer_umax: int64_atomics.buffer,
+                shader_int64_atomic_buffer_and: int64_atomics.buffer,
+                shader_int64_atomic_buffer_or: int64_atomics.buffer,
+                shader_int64_atomic_buffer_xor: int64_atomics.buffer,
+                shader_int64_atomic_buffer_exchange: int64_atomics.buffer,
+                shader_int64_atomic_buffer_compare_exchange: int64_atomics.buffer,
+                shader_int64_atomic_workgroup_add: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_min: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_max: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_umin: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_umax: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_and: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_or: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_xor: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_exchange: int64_atomics.workgroup,
+                shader_int64_atomic_workgroup_compare_exchange: int64_atomics.workgroup,
                 memory_topology,
                 subgroup_widths,
                 lanes: Arc::from([
@@ -579,6 +601,7 @@ impl Dx12 {
                     native_16bit_shader_ops,
                     shader_f64,
                     shader_int64,
+                    int64_atomics,
                     barycentrics_supported,
                     subgroup_widths,
                     max_buffer_bytes,

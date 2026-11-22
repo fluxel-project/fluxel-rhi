@@ -55,6 +55,7 @@ mod readback;
 mod resource;
 mod sampler;
 mod secondary;
+mod shader_atomics;
 mod shader_naga;
 mod sparse;
 mod surface;
@@ -118,6 +119,7 @@ struct Dx12DeviceState {
     pub(super) native_16bit_shader_ops: bool,
     pub(super) shader_f64: bool,
     pub(super) shader_int64: bool,
+    pub(super) int64_atomics: shader_atomics::Int64AtomicSupport,
     pub(super) barycentrics_supported: bool,
     pub(super) subgroup_widths: Option<api::SubgroupWidths>,
     /// Committed buffers consume the process GPU virtual-address range.
@@ -365,6 +367,23 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     type DirectFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     type NagaFuture<'a> = pipeline::worker::ColdFuture<Dx12Shader>;
     fn shader_route(device: &Dx12Device, desc: &api::ShaderDesc) -> api::ShaderRoute {
+        if desc.required_features.iter().any(|feature| {
+            shader_atomics::memory(feature).is_some_and(|memory| {
+                !device.0.int64_atomics.supports(memory)
+                    || !matches!(
+                        desc.format,
+                        api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(66..=69)
+                    )
+                    || desc.entries.is_empty()
+                    || !desc
+                        .entries
+                        .iter()
+                        .all(|entry| entry.stage == api::ShaderStage::Compute)
+                    || (desc.format == api::ShaderFormat::Dxil && desc.entries.len() != 1)
+            })
+        }) {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc
             .required_features
             .iter()
@@ -585,11 +604,16 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         }
     }
     fn compile_direct<'a>(
-        _: &'a Dx12Device,
+        device: &'a Dx12Device,
         desc: &'a api::ShaderDesc,
         _: &'a api::ShaderTarget,
     ) -> Self::DirectFuture<'a> {
         let desc = desc.clone();
+        let maximum_shader_model = device.0.shader_model;
+        let int64_atomics = desc
+            .required_features
+            .iter()
+            .any(|feature| shader_atomics::memory(feature).is_some());
         let requires_raster_primitive_index = desc
             .required_features
             .iter()
@@ -598,12 +622,17 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             api::ShaderFormat::Dxil if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty DXIL artifact".into()))
             }
-            api::ShaderFormat::Dxil => Ok(Dx12Shader {
-                bytes: desc.bytes.clone(),
-                entries: desc.entries.clone(),
-                requires_raster_primitive_index,
-                source: None,
-            }),
+            api::ShaderFormat::Dxil => {
+                if int64_atomics {
+                    shader_naga::validate_atomic_dxil(&desc.bytes, maximum_shader_model)?;
+                }
+                Ok(Dx12Shader {
+                    bytes: desc.bytes,
+                    entries: desc.entries,
+                    requires_raster_primitive_index,
+                    source: None,
+                })
+            }
             api::ShaderFormat::Hlsl(_) if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty HLSL source".into()))
             }
@@ -685,7 +714,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR => true,
         "shaderClipDistance" => true,
         SUBGROUP_FEATURE => wave_ops_supported,
-        _ => false,
+        other => shader_atomics::memory(other).is_some(),
     })
 }
 

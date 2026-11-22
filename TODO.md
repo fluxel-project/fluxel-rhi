@@ -267,6 +267,20 @@ layout, descriptor and readback agree on the logical scalar. Reject
 `Rg64Uint` on DX12 until a native two-component 64-bit image ABI covers its
 view, access and copy semantics.
 
+### DX12 native Int64 buffer and workgroup atomics
+
+**Status:** Native HLSL and compute DXIL qualify Int64 buffer and workgroup
+operations independently. DXC emitted the ten advertised operations in
+each address space. DX12 uses descriptor-table buffer bindings and checks
+OPTIONS11 for that path. OPTIONS9 qualifies group-shared operations.
+
+**Acceptance:** On each supported path, read back original and resulting
+values for add, signed and unsigned min/max, bitwise operations, exchange
+and compare-exchange. Include high bits, negative values, failed exchange,
+alignment and raw or structured buffer binding. Check rejection for an
+unsupported address space, lower shader profiles, non-compute programs,
+and a declared shader model above the device limit.
+
 ### DX12 view descriptor roles
 
 For a combined depth/stencil texture, verify that a default single-plane
