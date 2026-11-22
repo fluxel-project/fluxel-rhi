@@ -123,6 +123,20 @@ pub(super) fn compile_hlsl_with_origin(
     Ok(CompiledHlsl { bytes, report })
 }
 
+/// DXR stages are exported from a library and have no single DXC entry point.
+pub(in crate::backend) fn compile_ray_library(
+    source: &str,
+    model: u16,
+    native_16bit: bool,
+) -> Result<Vec<u8>> {
+    let mut arguments = vec!["-T".into(), format!("lib_{}_{}", model / 10, model % 10)];
+    if native_16bit {
+        arguments.push("-enable-16bit-types".into());
+    }
+    let (_library, result) = invoke(source, &arguments, ShaderDiagnosticSource::Hlsl)?;
+    result_bytes(&result)
+}
+
 /// Expands conditionals and macro definitions in memory before the raw-HLSL
 /// WaveSize lexer selects an entry. DXC emits only `#line` markers, which that
 /// lexer deliberately skips; a remaining directive is rejected there.

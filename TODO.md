@@ -431,6 +431,25 @@ Exercise reflected raw and structured native storage buffers with unknown
 minimum sizes. Verify that valid nonempty views can be bound and that empty
 or invalid ranges are rejected before descriptor writes.
 
+### DX12 ray pipeline shader libraries
+
+**Status:** Ray pipelines accept declared HLSL ray stages on DXR devices with
+shader model 6.3 or later, or precompiled DXIL libraries. HLSL is compiled as
+a DXIL library during pipeline creation. Each selected export must match the
+declared stage in the linked artifact.
+
+**Deferred:** Per-stage specialization is unavailable for immutable DXIL;
+the HLSL library compiles as a unit and the existing descriptor offers no
+library-wide specialization contract. Revisit only when a caller needs a
+defined policy for variants of one library shared across exports. Ray state
+objects cannot be written to the existing native graphics and compute PSO
+cache. Revisit with a native state-object persistence path.
+
+**Acceptance:** Create matching pipelines from HLSL and DXIL, exercise multiple
+exports of one library, and compare ray generation, miss, hit, and callable
+readback. Reject wrong-stage exports, a non-library DXIL artifact, unsupported
+model, and DXR-disabled HLSL before native pipeline creation.
+
 ### DX12 runtime and partially bound TLAS arrays
 
 **Status:** DXR devices with descriptor indexing support runtime and partially

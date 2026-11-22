@@ -14,6 +14,7 @@ mod immediates;
 mod layout_reflection;
 mod native_layout_reflection;
 mod sampler_lowering;
+pub(super) use dxc::compile_ray_library;
 pub(super) use dxil_container::{
     validate_atomic_dxil, validate_dual_source_outputs, validate_typed_int64_atomics,
 };

@@ -2,9 +2,12 @@
 //!
 //! All descriptor pointers below are valid only through CreateStateObject;
 //! owned COM state and copied identifiers outlive that synchronous call.
-use super::super::{Dx12, Dx12Device, Dx12RayPipeline, Dx12Shader, pipeline::PipelineLayoutState};
+use super::super::{
+    Dx12, Dx12Device, Dx12RayPipeline, Dx12Shader, Dx12ShaderSource, pipeline::PipelineLayoutState,
+    shader_naga,
+};
 use fluxel_rhi_core::api::{self, Error, Result};
-use std::{mem::ManuallyDrop, sync::Arc};
+use std::{collections::HashMap, mem::ManuallyDrop, sync::Arc};
 use windows::{
     Win32::Graphics::Direct3D12::*,
     core::{Interface, PCWSTR},
@@ -62,6 +65,18 @@ struct AdmittedRay<'a> {
     stages: Vec<(&'a Dx12Shader, api::ShaderStage)>,
 }
 
+pub(in crate::backend) fn is_ray_stage(stage: api::ShaderStage) -> bool {
+    matches!(
+        stage,
+        api::ShaderStage::RayGeneration
+            | api::ShaderStage::Miss
+            | api::ShaderStage::Callable
+            | api::ShaderStage::ClosestHit
+            | api::ShaderStage::AnyHit
+            | api::ShaderStage::Intersection
+    )
+}
+
 pub(super) fn pipeline_support(
     device: &Dx12Device,
     desc: &api::RayPipelineDesc<Dx12>,
@@ -98,11 +113,6 @@ fn admit_pipeline<'a>(
             }
             // SAFETY: Core validated that all shader modules belong to this device.
             let shader = unsafe { stage.module.native_ref() };
-            if shader.source.is_some() || shader.bytes.is_empty() {
-                return Err(Error::Unsupported(
-                    "DX12 ray pipeline requires DXIL libraries",
-                ));
-            }
             if stage.entry.is_empty() || stage.entry.contains('\0') {
                 return Err(Error::InvalidRange);
             }
@@ -111,20 +121,19 @@ fn admit_pipeline<'a>(
                 .iter()
                 .find(|e| e.name == stage.entry)
                 .ok_or(Error::InvalidState)?;
-            match entry.stage {
-                api::ShaderStage::RayGeneration
-                | api::ShaderStage::Miss
-                | api::ShaderStage::Callable
-                | api::ShaderStage::ClosestHit
-                | api::ShaderStage::AnyHit
-                | api::ShaderStage::Intersection => (),
-                _ => return Err(Error::Unsupported("DX12 ray shader stage")),
+            if !is_ray_stage(entry.stage) {
+                return Err(Error::Unsupported("DX12 ray shader stage"));
             }
-            super::super::shader_naga::validate_dxil_library_export(
-                &shader.bytes,
-                &stage.entry,
-                entry.stage,
-            )?;
+            match &shader.source {
+                None => shader_naga::validate_dxil_library_export(
+                    &shader.bytes,
+                    &stage.entry,
+                    entry.stage,
+                )?,
+                Some(Dx12ShaderSource::Hlsl(source))
+                    if matches!(source.format, api::ShaderFormat::Hlsl(model) if (63..=device.0.shader_model.min(69)).contains(&model)) => {}
+                Some(_) => return Err(Error::Unsupported("DX12 ray shader source")),
+            }
             Ok((shader, entry.stage))
         })
         .collect::<Result<_>>()?;
@@ -184,6 +193,38 @@ pub(crate) fn create_pipeline(
 ) -> Result<Dx12RayPipeline> {
     let ray_device = super::ray_device(device)?;
     let AdmittedRay { layout, stages } = admit_pipeline(device, desc)?;
+    // Multiple entries from one HLSL module share a single compiled DXIL library.
+    let mut compiled = HashMap::<(*const [u8], u16, bool), Arc<[u8]>>::new();
+    let artifacts: Vec<_> = stages
+        .iter()
+        .zip(&desc.shaders)
+        .map(|(&(shader, stage), desc)| {
+            let Some(Dx12ShaderSource::Hlsl(source)) = &shader.source else {
+                return Ok(shader.bytes.clone());
+            };
+            let api::ShaderFormat::Hlsl(model) = source.format else {
+                return Err(Error::InvalidState);
+            };
+            let native_16bit = shader_naga::requires_native_16bit(source);
+            // Shader handles can be cloned by value. Their source allocation
+            // remains shared, and the other fields determine the DXC options.
+            let key = (Arc::as_ptr(&source.bytes), model, native_16bit);
+            let artifact = match compiled.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let text = std::str::from_utf8(&source.bytes)
+                        .map_err(|_| Error::Shader("HLSL is not UTF-8".into()))?;
+                    entry.insert(Arc::from(shader_naga::compile_ray_library(
+                        text,
+                        model,
+                        native_16bit,
+                    )?))
+                }
+            };
+            shader_naga::validate_dxil_library_export(artifact, &desc.entry, stage)?;
+            Ok(artifact.clone())
+        })
+        .collect::<Result<_>>()?;
     let originals: Vec<_> = desc
         .shaders
         .iter()
@@ -192,25 +233,30 @@ pub(crate) fn create_pipeline(
     let aliases: Vec<_> = (0..stages.len())
         .map(|i| wide(&format!("fluxel_shader_{i}")))
         .collect();
-    let exports: Vec<_> = aliases
-        .iter()
-        .zip(&originals)
-        .map(|(alias, original)| D3D12_EXPORT_DESC {
+    let mut library_indices = HashMap::new();
+    let mut library_exports: Vec<(&[u8], Vec<D3D12_EXPORT_DESC>)> = Vec::new();
+    for ((bytes, alias), original) in artifacts.iter().zip(&aliases).zip(&originals) {
+        let index = *library_indices
+            .entry(Arc::as_ptr(bytes))
+            .or_insert_with(|| {
+                library_exports.push((bytes, Vec::new()));
+                library_exports.len() - 1
+            });
+        library_exports[index].1.push(D3D12_EXPORT_DESC {
             Name: ptr(alias),
             ExportToRename: ptr(original),
             Flags: D3D12_EXPORT_FLAG_NONE,
-        })
-        .collect();
-    let libraries: Vec<_> = stages
+        });
+    }
+    let libraries: Vec<_> = library_exports
         .iter()
-        .enumerate()
-        .map(|(i, (shader, _))| D3D12_DXIL_LIBRARY_DESC {
+        .map(|(bytes, exports)| D3D12_DXIL_LIBRARY_DESC {
             DXILLibrary: D3D12_SHADER_BYTECODE {
-                pShaderBytecode: shader.bytes.as_ptr().cast(),
-                BytecodeLength: shader.bytes.len(),
+                pShaderBytecode: bytes.as_ptr().cast(),
+                BytecodeLength: bytes.len(),
             },
-            NumExports: 1,
-            pExports: &exports[i],
+            NumExports: exports.len() as u32,
+            pExports: exports.as_ptr(),
         })
         .collect();
     let names: Vec<_> = (0..desc.groups.len())

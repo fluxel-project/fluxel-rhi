@@ -525,7 +525,7 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                 abi_key: "dxil".into(),
             }),
             api::ShaderFormat::Hlsl(model)
-                if direct_hlsl_entries_supported(desc)
+                if direct_hlsl_entries_supported(device, desc, model)
                     && (60..=69).contains(&model)
                     && device.0.shader_model >= model =>
             {
@@ -563,6 +563,10 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     ) -> Self::DirectFuture<'a> {
         let desc = desc.clone();
         let maximum_shader_model = device.0.shader_model;
+        let hlsl_supported = match desc.format {
+            api::ShaderFormat::Hlsl(model) => direct_hlsl_entries_supported(device, &desc, model),
+            _ => false,
+        };
         let int64_atomics = desc
             .required_features
             .iter()
@@ -604,11 +608,13 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             api::ShaderFormat::Hlsl(_) if desc.bytes.is_empty() => {
                 Err(Error::Shader("empty HLSL source".into()))
             }
-            api::ShaderFormat::Hlsl(_) if !direct_hlsl_entries_supported(&desc) => {
-                Err(Error::Unsupported("DX12 HLSL shader stage"))
-            }
-            api::ShaderFormat::Hlsl(model) if !(60..=69).contains(&model) => {
+            api::ShaderFormat::Hlsl(model)
+                if !(60..=69).contains(&model) || model > maximum_shader_model =>
+            {
                 Err(Error::Unsupported("DX12 HLSL shader model"))
+            }
+            api::ShaderFormat::Hlsl(_) if !hlsl_supported => {
+                Err(Error::Unsupported("DX12 HLSL shader stage"))
             }
             api::ShaderFormat::Hlsl(_) => match std::str::from_utf8(&desc.bytes) {
                 Ok(_) => Ok(Dx12Shader {
@@ -646,13 +652,14 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
     }
 }
 
-fn direct_hlsl_entries_supported(desc: &api::ShaderDesc) -> bool {
+fn direct_hlsl_entries_supported(device: &Dx12Device, desc: &api::ShaderDesc, model: u16) -> bool {
+    let ray_library = model >= 63 && device.0.ray_device.is_some();
     !desc.entries.is_empty()
         && desc.entries.iter().all(|entry| {
             matches!(
                 entry.stage,
                 api::ShaderStage::Compute | api::ShaderStage::Vertex | api::ShaderStage::Fragment
-            )
+            ) || (ray_library && ray::pipeline::is_ray_stage(entry.stage))
         })
 }
 

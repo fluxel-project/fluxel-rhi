@@ -444,6 +444,11 @@ create resources and pipelines
         -> retire retained owners after that fence completes
 ```
 
+Native ray stages use DXIL libraries. DXR-capable devices also accept HLSL at
+shader model 6.3 or later. Ray pipeline creation compiles each referenced HLSL
+library once and checks the actual export stages before creating the state
+object. Pipeline support checks HLSL descriptors without compiling them.
+
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and
 secondary bundles to the command list. Secondary work is a D3D12 bundle with
