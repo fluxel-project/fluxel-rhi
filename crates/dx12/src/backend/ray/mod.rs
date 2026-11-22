@@ -13,13 +13,18 @@ use windows::{
 mod compaction;
 mod copy;
 mod geometry;
+mod gpu_tlas;
+pub(super) use gpu_tlas::TlasPackCache;
 mod ops;
 pub use ops::Ray;
 pub(crate) mod pipeline;
 mod refit;
 pub(crate) use refit::validate_recordings as validate_acceleration_recordings;
 mod index_snapshot;
-pub(crate) use index_snapshot::{IndexSnapshotId, IndexSnapshotOp};
+mod prepared_input;
+pub(crate) use prepared_input::{PreparedInputId, PreparedInputOp};
+mod submission;
+pub(crate) use submission::{pin_batch, publish_segment, seal_compaction_receipts};
 mod trace;
 
 #[cfg(all(test, feature = "hardware-tests"))]
@@ -28,6 +33,7 @@ mod retention_gpu;
 
 use super::{Dx12, Dx12Acceleration, Dx12Device};
 use fluxel_rhi_core::api::{self, Error, Result};
+use std::collections::HashSet;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -57,6 +63,7 @@ pub(crate) struct RecordedAccelerationBuild {
     refit: bool,
     receipt: Option<Arc<compaction::CompactionReceipt>>,
     source: Option<CopySource>,
+    validate_blas: bool,
 }
 
 enum CopySource {
@@ -68,6 +75,12 @@ fn extend_unique(
     retained: &mut Vec<Dx12Acceleration>,
     incoming: impl IntoIterator<Item = Dx12Acceleration>,
 ) {
+    let incoming = incoming.into_iter();
+    if retained.len().saturating_add(incoming.size_hint().0) > 16 {
+        let mut known: HashSet<_> = retained.iter().map(|value| Arc::as_ptr(&value.0)).collect();
+        retained.extend(incoming.filter(|value| known.insert(Arc::as_ptr(&value.0))));
+        return;
+    }
     for value in incoming {
         if !retained
             .iter()
@@ -87,117 +100,12 @@ fn committed(acceleration: &Dx12Acceleration) -> Vec<Dx12Acceleration> {
         .clone()
 }
 
-/// Pins the conservative dependency union for one native Execute batch.
-///
-/// `bound_groups` covers raster and compute inline ray queries as well as
-/// dispatch rays: the backend cannot infer which shader instruction consumes
-/// an acceleration structure, so every retained binding is a possible use.
-pub(crate) fn pin_batch(work: &mut [super::encoder::Dx12RecordedWork]) {
-    if work.is_empty() {
-        return;
-    }
-    let mut dependencies = Vec::new();
-    for record in work.iter() {
-        for group in &record.encoder.bound_groups {
-            for acceleration in group.0.accelerations() {
-                if acceleration.0.is_top_level {
-                    extend_unique(&mut dependencies, committed(acceleration));
-                }
-            }
-        }
-        for secondary in &record.encoder.secondary {
-            for group in &secondary.groups {
-                for acceleration in group.0.accelerations() {
-                    if acceleration.0.is_top_level {
-                        extend_unique(&mut dependencies, committed(acceleration));
-                    }
-                }
-            }
-        }
-        for build in &record.encoder.ray_builds {
-            if build.refit && build.target.0.is_top_level {
-                extend_unique(&mut dependencies, committed(&build.target));
-            }
-            extend_unique(&mut dependencies, build.blas.clone());
-            if let Some(CopySource::Clone(source)) = &build.source {
-                if source.0.is_top_level {
-                    extend_unique(&mut dependencies, committed(source));
-                }
-            }
-        }
-    }
-    // One record in this accepted batch owns the union through the enclosing
-    // fence-retired `issued` list. This is bounded by that batch, never TLAS
-    // history, and also protects an indeterminate handoff quarantine.
-    extend_unique(&mut work[0].encoder.accelerations, dependencies);
-}
-
-/// Publishes just the builds whose native command-list segment was accepted.
-pub(crate) fn publish_segment(work: &super::encoder::Dx12RecordedWork, segment: usize) {
-    index_snapshot::publish(&work.encoder.ray_index_snapshots, segment);
-    for build in work
-        .encoder
-        .ray_builds
-        .iter()
-        .filter(|build| build.segment == segment)
-    {
-        let (blas, signature) = match &build.source {
-            Some(CopySource::Clone(source)) => (committed(source), committed_signature(source)),
-            _ => (build.blas.clone(), build.signature.clone()),
-        };
-        if build.target.0.is_top_level {
-            *build
-                .target
-                .0
-                .committed_blas
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = blas;
-        }
-        *build
-            .target
-            .0
-            .committed_signature
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = signature;
-        *build
-            .target
-            .0
-            .committed_revision
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = build
-            .receipt
-            .as_ref()
-            .map(|receipt| receipt.revision.clone());
-        // Both publication and admission read this bit under the submission gate.
-        build
-            .target
-            .0
-            .committed_built
-            .store(true, Ordering::Relaxed);
-    }
-}
-
 fn committed_signature(src: &Dx12Acceleration) -> Option<Arc<refit::RefitSignature>> {
     src.0
         .committed_signature
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone()
-}
-
-pub(crate) fn seal_compaction_receipts(
-    work: &super::encoder::Dx12RecordedWork,
-    fence: &ID3D12Fence,
-    value: u64,
-) {
-    for receipt in work
-        .encoder
-        .ray_builds
-        .iter()
-        .filter_map(|build| build.receipt.as_ref())
-    {
-        receipt.seal(fence, value);
-    }
 }
 
 fn ray_device(device: &Dx12Device) -> Result<&ID3D12Device5> {
@@ -214,7 +122,15 @@ fn sizes(
     compactable: bool,
 ) -> Result<api::AccelerationSizes> {
     let geometry = geometry::GeometryInputs::new(desc, device.0.dxr_1_1)?;
-    let info = prebuild(device, &geometry, compactable)?;
+    allocation_sizes(device, &geometry, compactable)
+}
+
+fn allocation_sizes(
+    device: &Dx12Device,
+    geometry: &geometry::GeometryInputs,
+    compactable: bool,
+) -> Result<api::AccelerationSizes> {
+    let info = prebuild(device, geometry, compactable)?;
     Ok(api::AccelerationSizes {
         storage_bytes: info.ResultDataMaxSizeInBytes,
         scratch_bytes: info
@@ -254,7 +170,10 @@ fn create_acceleration(
     allocate_acceleration(
         device,
         size,
-        matches!(desc.input, api::AccelerationInput::Tlas(_)),
+        matches!(
+            desc.input,
+            api::AccelerationInput::Tlas(_) | api::AccelerationInput::PackedTlas(_)
+        ),
     )
 }
 
@@ -380,7 +299,7 @@ fn build(
     if !scratch.usage.contains(api::BufferUsage::ACCEL_SCRATCH)
         || scratch.size < scratch_bytes
         || (!refit && dst.0.size < sizes.ResultDataMaxSizeInBytes)
-        || dst.0.is_top_level != matches!(desc.input, api::AccelerationInput::Tlas(_))
+        || dst.0.is_top_level != geometry.is_top_level()
     {
         return Err(Error::InvalidRange);
     }
@@ -495,6 +414,17 @@ fn build(
         }
         encoder.uploads.push(upload);
     }
+    let packed_input = if let api::AccelerationInput::PackedTlas(instances) = &desc.input {
+        // SAFETY: Core checked device provenance, and GeometryInputs retained
+        // the packed allocation with this command. Its state is private.
+        let packed = unsafe { instances.native_ref() };
+        // SAFETY: the packed allocation is live and has the instance alignment.
+        instance_address = unsafe { packed.records.resource.GetGPUVirtualAddress() };
+        referenced_blas.extend(packed.blas.iter().cloned());
+        true
+    } else {
+        false
+    };
     // SAFETY: resources are live and kept by the encoder through completion.
     let scratch_address = unsafe { scratch.resource.GetGPUVirtualAddress() };
     if scratch_address % u64::from(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0 {
@@ -528,16 +458,24 @@ fn build(
         )
     };
     encoder.buffers.extend(geometry.buffers);
-    encoder
-        .ray_index_snapshots
-        .extend(geometry.snapshots.into_iter().map(IndexSnapshotOp::Read));
+    encoder.ray_inputs.extend(
+        geometry
+            .prepared_inputs
+            .into_iter()
+            .map(PreparedInputOp::Read),
+    );
     encoder.buffers.push(scratch.clone());
     if let Some((buffer, _, _)) = output {
         encoder.buffers.push(buffer.clone());
     }
     encoder.accelerations.push(dst.clone());
-    let mut unique = Vec::new();
-    extend_unique(&mut unique, referenced_blas);
+    let unique = if packed_input {
+        referenced_blas
+    } else {
+        let mut unique = Vec::new();
+        extend_unique(&mut unique, referenced_blas);
+        unique
+    };
     encoder.ray_builds.push(RecordedAccelerationBuild {
         target: dst.clone(),
         blas: unique,
@@ -546,6 +484,7 @@ fn build(
         refit,
         receipt: None,
         source: None,
+        validate_blas: packed_input,
     });
     Ok(())
 }

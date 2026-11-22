@@ -7,7 +7,7 @@ use std::{
 
 use fluxel_rhi_core::api::{self, Error, Result};
 
-use super::{CopySource, Dx12, committed_signature, index_snapshot::SnapshotAdmission};
+use super::{CopySource, Dx12, committed_signature, prepared_input::PreparedInputAdmission};
 use crate::backend::encoder::Dx12Encoder;
 
 #[derive(Eq, PartialEq)]
@@ -19,7 +19,7 @@ pub(super) struct RefitSignature {
 
 #[derive(Eq, PartialEq)]
 enum Shape {
-    Tlas(usize),
+    Tlas { count: usize, all_null: bool },
     Blas(Vec<GeometryShape>),
 }
 
@@ -31,7 +31,7 @@ enum GeometryShape {
         stride: u64,
         opaque: bool,
         transformed: bool,
-        indices: Option<super::IndexSnapshotId>,
+        indices: Option<super::PreparedInputId>,
     },
     Aabbs {
         count: u32,
@@ -49,7 +49,15 @@ impl RefitSignature {
             return None;
         }
         let shape = match &desc.input {
-            api::AccelerationInput::Tlas(instances) => Shape::Tlas(instances.len()),
+            api::AccelerationInput::Tlas(instances) => Shape::Tlas {
+                count: instances.len(),
+                all_null: false,
+            },
+            api::AccelerationInput::PackedTlas(instances) => Shape::Tlas {
+                count: instances.count() as usize,
+                // SAFETY: admission reads only the opaque input's retained BLAS owners.
+                all_null: unsafe { instances.native_ref() }.blas.is_empty(),
+            },
             api::AccelerationInput::Blas(geometries) => Shape::Blas(
                 geometries
                     .iter()
@@ -138,10 +146,18 @@ pub(crate) fn validate_recordings<'a>(
         revision: Option<&'a Arc<()>>,
     }
     let mut pending = HashMap::<_, PendingBuild<'_>>::new();
-    let mut snapshots = SnapshotAdmission::default();
+    let mut prepared_inputs = PreparedInputAdmission::default();
     for recording in recordings {
-        snapshots.validate(&recording.ray_index_snapshots)?;
+        prepared_inputs.validate(&recording.ray_inputs)?;
         for build in &recording.ray_builds {
+            if build.validate_blas
+                && build.blas.iter().any(|blas| {
+                    !pending.contains_key(&Arc::as_ptr(&blas.0))
+                        && !blas.0.committed_built.load(Ordering::Relaxed)
+                })
+            {
+                return Err(Error::InvalidState);
+            }
             let identity = Arc::as_ptr(&build.target.0);
             let mut signature = build.signature.clone();
             if build.refit {

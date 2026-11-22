@@ -113,6 +113,9 @@ impl Inputs {
                 );
                 true
             }
+            api::AccelerationInput::PackedTlas(_) => {
+                return Err(Error::Unsupported("Vulkan GPU-produced TLAS"));
+            }
             api::AccelerationInput::Blas(items) => {
                 if items.is_empty() {
                     return Err(Error::InvalidRange);

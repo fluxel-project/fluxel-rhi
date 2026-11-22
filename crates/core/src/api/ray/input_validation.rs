@@ -25,6 +25,7 @@ impl<B: Backend> AccelerationInput<B> {
             Self::Tlas(instances) => instances
                 .iter()
                 .any(|instance| instance.blas.device != device),
+            Self::PackedTlas(instances) => instances.device != device,
         };
         if foreign {
             return Err(Error::WrongDevice);
@@ -38,6 +39,9 @@ impl<B: Backend> AccelerationInput<B> {
             if instances.iter().any(|instance| !instance.flags.valid()) {
                 return Err(Error::InvalidState);
             }
+        }
+        if let Self::PackedTlas(instances) = self {
+            validate_tlas_count(instances.count(), limits.max_tlas_instance_count)?;
         }
         if let Self::Blas(geometries) = self {
             if limits.max_blas_geometry_count != 0

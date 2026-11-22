@@ -3,15 +3,9 @@
 //! The caller supplies producer, copy, and consumer ordering. Publication here
 //! proves that the initializing list was handed to the driver, not completion.
 
-use std::{
-    collections::HashSet,
-    ops::Range,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-};
+use std::ops::Range;
 
+use super::{PreparedInputId, PreparedInputOp};
 use fluxel_rhi_core::{
     api::{self, Error, Result},
     backend::{CommandBackend, ResourceBackend},
@@ -24,25 +18,9 @@ use crate::backend::{
 };
 
 #[derive(Clone)]
-pub(crate) struct IndexSnapshotId(Arc<AtomicBool>);
-
-impl PartialEq for IndexSnapshotId {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for IndexSnapshotId {}
-
-#[derive(Clone)]
 pub struct Dx12IndexSnapshot {
     pub(super) storage: Dx12Buffer,
-    pub(super) id: IndexSnapshotId,
-}
-
-pub(crate) enum IndexSnapshotOp {
-    Copy { id: IndexSnapshotId, segment: usize },
-    Read(IndexSnapshotId),
+    pub(super) id: PreparedInputId,
 }
 
 pub(super) fn record(
@@ -71,7 +49,7 @@ pub(super) fn record(
             memory: api::MemoryClass::Device,
         },
     )?;
-    let id = IndexSnapshotId(Arc::new(AtomicBool::new(false)));
+    let id = PreparedInputId::new();
     barrier(
         &encoder.list,
         &storage.resource,
@@ -85,59 +63,9 @@ pub(super) fn record(
         D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
     );
-    encoder.ray_index_snapshots.push(IndexSnapshotOp::Copy {
+    encoder.ray_inputs.push(PreparedInputOp::Initialize {
         id: id.clone(),
         segment: encoder.closed_segments.len(),
     });
     Ok(Dx12IndexSnapshot { storage, id })
-}
-
-#[derive(Default)]
-pub(super) struct SnapshotAdmission {
-    copies: Option<HashSet<*const AtomicBool>>,
-}
-
-impl SnapshotAdmission {
-    pub(super) fn validate(&mut self, ops: &[IndexSnapshotOp]) -> Result<()> {
-        for op in ops {
-            match op {
-                IndexSnapshotOp::Copy { id, .. } => {
-                    if id.0.load(Ordering::Relaxed)
-                        || !self
-                            .copies
-                            .get_or_insert_with(HashSet::new)
-                            .insert(Arc::as_ptr(&id.0))
-                    {
-                        return Err(Error::InvalidState);
-                    }
-                }
-                IndexSnapshotOp::Read(id) => {
-                    if !id.0.load(Ordering::Relaxed)
-                        && !self
-                            .copies
-                            .as_ref()
-                            .is_some_and(|copies| copies.contains(&Arc::as_ptr(&id.0)))
-                    {
-                        return Err(Error::InvalidState);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-pub(super) fn publish(ops: &[IndexSnapshotOp], segment: usize) {
-    for op in ops {
-        if let IndexSnapshotOp::Copy {
-            id,
-            segment: copy_segment,
-        } = op
-        {
-            if *copy_segment == segment {
-                // All admission and publication run under the submission gate.
-                id.0.store(true, Ordering::Relaxed);
-            }
-        }
-    }
 }

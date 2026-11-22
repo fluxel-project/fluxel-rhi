@@ -130,6 +130,7 @@ struct Dx12DeviceState {
     /// the opened device reports that fact through the ray capability.
     pub(super) ray_device: Option<windows::Win32::Graphics::Direct3D12::ID3D12Device5>,
     pub(super) dxr_1_1: bool,
+    pub(super) tlas_pack_cache: ray::TlasPackCache,
     pub(super) ray_query_supported: bool,
     pub(super) mesh_supported: bool,
     pub(super) mesh_multiview: bool,

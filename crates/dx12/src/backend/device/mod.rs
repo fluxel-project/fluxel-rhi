@@ -631,6 +631,7 @@ impl Dx12 {
                     max_buffer_bytes,
                     ray_device,
                     dxr_1_1,
+                    tlas_pack_cache: Default::default(),
                     ray_query_supported,
                     mesh_supported,
                     mesh_multiview,

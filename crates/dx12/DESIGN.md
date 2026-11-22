@@ -468,6 +468,14 @@ supplies the source transition, queue dependencies, and the same snapshot
 for future refits. The DX12 submission gate accepts a snapshot read only
 after its initializing copy, and the backend retains the underlying storage
 while that copy or build is in flight.
+GPU-produced TLAS instances use an explicit pack command on logical 64-byte
+records and a typed BLAS slice. The caller schedules the producer, pack and
+build, including any cross-queue waits. Packing uploads eight address bytes
+per table entry, dispatches once, and transitions only its private output
+from common to UAV and then to acceleration input. Invalid records use a
+zero traversal mask with an in-bounds fallback BLAS. With an empty table
+they use null instances. A refit cannot switch between these two table modes.
+TLAS publication keeps every possible BLAS target alive.
 
 Recording applies explicit Core transitions, clears, copies, render passes,
 bind groups, draw/dispatch operations, queries, indirect commands, and

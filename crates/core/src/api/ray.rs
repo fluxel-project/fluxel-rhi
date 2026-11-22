@@ -6,9 +6,11 @@
 use super::*;
 
 mod compaction;
+mod gpu_tlas;
 mod index_snapshot;
 mod input_validation;
 pub use compaction::AccelerationCompactionTicket;
+pub use gpu_tlas::*;
 pub use index_snapshot::AccelerationIndexSnapshot;
 use std::{
     future::Future,
@@ -155,6 +157,8 @@ pub struct AccelerationInstance<B: Backend> {
 pub enum AccelerationInput<B: Backend> {
     Blas(Vec<AccelerationGeometry<B>>),
     Tlas(Vec<AccelerationInstance<B>>),
+    /// Top-level instances prepared by an explicit GPU packing operation.
+    PackedTlas(PackedTlasInstances<B>),
 }
 #[derive(Clone)]
 pub struct AccelerationDesc<B: Backend> {
@@ -243,6 +247,7 @@ pub struct ShaderTable<B: Backend> {
 
 impl<B: Backend> RayOps<B> for Unavailable {
     type NativeIndexSnapshot = ();
+    type NativePackedTlas = ();
     const AVAILABLE: bool = false;
     type PipelineFuture<'a>
         = std::future::Ready<Result<B::NativeRayPipeline>>

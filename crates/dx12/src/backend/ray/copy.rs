@@ -58,6 +58,7 @@ pub(super) fn record_clone(
         refit: false,
         receipt: None,
         source: Some(CopySource::Clone(src.clone())),
+        validate_blas: false,
     });
     Ok(())
 }

@@ -1318,11 +1318,14 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   provable immutability contract. Acceptance covers both index widths, source
   overwrite, different-snapshot rejection, same-packet and cross-queue ordering,
   owner lifetime, traversal readback, and the measured copy cost.
-- **R19, DESIGNING — GPU-generated TLAS instances.** Use logical GPU instance
-  records and a bounded typed BLAS table. DX12 packs private native records and
-  retains all referenced acceleration structures. Define invalid-index behavior.
-  Caller/Renderer supplies producer ordering and completion coverage. Prove
-  typed conversion and retention with GPU tests without implicit synchronization.
+- **R19, VERIFYING — GPU-generated TLAS instances.** Core exposes the logical
+  record layout, explicit pack, and its dispatch and byte costs. DX12 retains
+  the typed BLAS table and uses a zero traversal mask for invalid records,
+  or null instances when the table is empty. Refit preserves table nullness
+  and instance count. Caller/Renderer orders producer, pack, build and trace.
+  Acceptance covers multiple BLAS indices, empty and invalid input, same-packet
+  and cross-queue handoff, incompatible refit, foreign and unbuilt entries,
+  dropping owners before traversal, and pack cost.
 - **R20, UNSUPPORTED — mesh point output.** The DX12 mesh route exposes line
   and triangle output. Reopen only with native support or a separately defined
   semantic and observable workload.

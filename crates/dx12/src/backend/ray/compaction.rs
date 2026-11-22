@@ -182,6 +182,7 @@ impl AccelerationCompactionBackend for Dx12 {
                 source.clone(),
                 ticket.receipt.revision.clone(),
             )),
+            validate_blas: false,
         });
         Ok(destination)
     }

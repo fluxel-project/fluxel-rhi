@@ -134,6 +134,7 @@ impl Backend for Mock {
 }
 impl RayOps<Mock> for MockRay {
     type NativeIndexSnapshot = ();
+    type NativePackedTlas = ();
     const AVAILABLE: bool = true;
     type PipelineFuture<'a> = std::future::Ready<Result<()>>;
     fn create_pipeline<'a>(_: &'a (), _: &'a RayPipelineDesc<Mock>) -> Self::PipelineFuture<'a> {

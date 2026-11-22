@@ -224,7 +224,7 @@ impl UploadArena {
         Ok(page.finish_write(start, len))
     }
 
-    pub(super) fn write_with(
+    pub(crate) fn write_with(
         &mut self,
         device: &ID3D12Device,
         size: usize,

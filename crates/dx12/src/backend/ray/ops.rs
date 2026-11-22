@@ -15,6 +15,8 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
     const ACCELERATION_CLONE_AVAILABLE: bool = true;
     const INDEX_SNAPSHOTS_AVAILABLE: bool = true;
     type NativeIndexSnapshot = super::index_snapshot::Dx12IndexSnapshot;
+    type NativePackedTlas = super::gpu_tlas::Dx12PackedTlas;
+    const GPU_TLAS_AVAILABLE: bool = true;
     fn pipeline_support(device: &Dx12Device, desc: &api::RayPipelineDesc<Dx12>) -> Result<()> {
         super::pipeline::pipeline_support(device, desc)
     }
@@ -139,6 +141,32 @@ impl fluxel_rhi_core::backend::RayOps<Dx12> for Ray {
         range: std::ops::Range<u64>,
     ) -> Result<Self::NativeIndexSnapshot> {
         super::index_snapshot::record(encoder, source, range)
+    }
+    fn gpu_tlas_pack_cost(
+        device: &Dx12Device,
+        count: u32,
+        blas_count: u32,
+    ) -> Result<api::GpuTlasPackCost> {
+        super::gpu_tlas::pack_cost(device, count, blas_count)
+    }
+    fn gpu_tlas_sizes(
+        device: &Dx12Device,
+        layout: api::GpuTlasLayout,
+    ) -> Result<api::AccelerationSizes> {
+        super::gpu_tlas::sizes(device, layout)
+    }
+    fn create_gpu_tlas(
+        device: &Dx12Device,
+        layout: api::GpuTlasLayout,
+    ) -> Result<Dx12Acceleration> {
+        let size = super::gpu_tlas::sizes(device, layout)?.storage_bytes;
+        super::allocate_acceleration(device, size, true)
+    }
+    fn pack_tlas_instances(
+        encoder: &mut Dx12Encoder,
+        desc: &api::GpuTlasPackDesc<'_, Dx12>,
+    ) -> Result<Self::NativePackedTlas> {
+        super::gpu_tlas::pack(encoder, desc)
     }
     fn update_acceleration(
         encoder: &mut Dx12Encoder,

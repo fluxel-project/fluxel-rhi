@@ -341,6 +341,9 @@ pub trait RayOps<B: Backend> {
     /// A dedicated GPU copy can create an immutable index snapshot for refit.
     const INDEX_SNAPSHOTS_AVAILABLE: bool = false;
     type NativeIndexSnapshot: Clone;
+    type NativePackedTlas: Clone;
+    /// GPU logical TLAS records can be converted to native instances.
+    const GPU_TLAS_AVAILABLE: bool = false;
     fn pipeline_support(_device: &B::NativeDevice, _desc: &RayPipelineDesc<B>) -> Result<()> {
         Err(Error::Unsupported("ray pipeline support query"))
     }
@@ -411,6 +414,21 @@ pub trait RayOps<B: Backend> {
         _: std::ops::Range<u64>,
     ) -> Result<Self::NativeIndexSnapshot> {
         Err(Error::Unsupported("acceleration index snapshots"))
+    }
+    fn gpu_tlas_pack_cost(_: &B::NativeDevice, _: u32, _: u32) -> Result<GpuTlasPackCost> {
+        Err(Error::Unsupported("GPU-produced TLAS"))
+    }
+    fn gpu_tlas_sizes(_: &B::NativeDevice, _: GpuTlasLayout) -> Result<AccelerationSizes> {
+        Err(Error::Unsupported("GPU-produced TLAS"))
+    }
+    fn create_gpu_tlas(_: &B::NativeDevice, _: GpuTlasLayout) -> Result<B::NativeAcceleration> {
+        Err(Error::Unsupported("GPU-produced TLAS"))
+    }
+    fn pack_tlas_instances(
+        _: &mut B::NativeEncoder,
+        _: &GpuTlasPackDesc<'_, B>,
+    ) -> Result<Self::NativePackedTlas> {
+        Err(Error::Unsupported("GPU-produced TLAS"))
     }
     fn update_acceleration(
         _encoder: &mut B::NativeEncoder,

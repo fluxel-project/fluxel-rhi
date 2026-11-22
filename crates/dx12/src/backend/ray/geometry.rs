@@ -11,7 +11,7 @@ use super::super::{Dx12, Dx12Buffer};
 pub(super) struct GeometryInputs {
     geometries: Vec<D3D12_RAYTRACING_GEOMETRY_DESC>,
     pub(super) buffers: Vec<Dx12Buffer>,
-    pub(super) snapshots: Vec<super::IndexSnapshotId>,
+    pub(super) prepared_inputs: Vec<super::PreparedInputId>,
     kind: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE,
     count: u32,
     flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS,
@@ -100,13 +100,23 @@ fn address(
 impl GeometryInputs {
     pub(super) fn new(desc: &api::AccelerationDesc<Dx12>, dxr_1_1: bool) -> Result<Self> {
         let mut buffers = Vec::new();
-        let mut snapshots = Vec::new();
+        let mut prepared_inputs = Vec::new();
         let mut geometries = Vec::new();
         let (kind, count) = match &desc.input {
             api::AccelerationInput::Tlas(instances) => (
                 D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
                 u32::try_from(instances.len()).map_err(|_| Error::InvalidRange)?,
             ),
+            api::AccelerationInput::PackedTlas(instances) => {
+                // SAFETY: Core checked the packed input's device. Builds only read it.
+                let packed = unsafe { instances.native_ref() };
+                buffers.push(packed.records.clone());
+                prepared_inputs.push(packed.id.clone());
+                (
+                    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+                    instances.count(),
+                )
+            }
             api::AccelerationInput::Blas(items) => {
                 for item in items {
                     let (geometry, opaque) = match item {
@@ -158,7 +168,7 @@ impl GeometryInputs {
                                 } => {
                                     // SAFETY: geometry lowering only reads the private snapshot.
                                     let snapshot = unsafe { indices.native_ref() };
-                                    snapshots.push(snapshot.id.clone());
+                                    prepared_inputs.push(snapshot.id.clone());
                                     Some((&snapshot.storage, 0, indices.count(), indices.format()))
                                 }
                                 _ => unreachable!(),
@@ -287,22 +297,32 @@ impl GeometryInputs {
         if count == 0 {
             return Err(Error::InvalidRange);
         }
-        let mut flags = if desc.fast_trace {
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE
-        } else {
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD
-        };
-        if desc.allow_update {
-            flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
-        }
         Ok(Self {
             geometries,
             buffers,
-            snapshots,
+            prepared_inputs,
             kind,
             count,
-            flags,
+            flags: build_flags(desc.fast_trace, desc.allow_update),
         })
+    }
+
+    pub(super) fn tlas(layout: api::GpuTlasLayout) -> Result<Self> {
+        if !(1..=super::gpu_tlas::MAX_TLAS_INSTANCES).contains(&layout.count) {
+            return Err(Error::InvalidRange);
+        }
+        Ok(Self {
+            geometries: Vec::new(),
+            buffers: Vec::new(),
+            prepared_inputs: Vec::new(),
+            kind: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+            count: layout.count,
+            flags: build_flags(layout.fast_trace, layout.allow_update),
+        })
+    }
+
+    pub(super) fn is_top_level(&self) -> bool {
+        self.kind == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL
     }
 
     pub(super) fn native(
@@ -314,17 +334,32 @@ impl GeometryInputs {
             Flags: self.flags,
             NumDescs: self.count,
             DescsLayout: D3D12_ELEMENTS_LAYOUT_ARRAY,
-            Anonymous: if self.kind == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL {
+            Anonymous: if self.is_top_level() {
                 D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
-                    pGeometryDescs: self.geometries.as_ptr(),
+                    InstanceDescs: instances_address,
                 }
             } else {
                 D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
-                    InstanceDescs: instances_address,
+                    pGeometryDescs: self.geometries.as_ptr(),
                 }
             },
         }
     }
+}
+
+fn build_flags(
+    fast_trace: bool,
+    allow_update: bool,
+) -> D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS {
+    let mut flags = if fast_trace {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE
+    } else {
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD
+    };
+    if allow_update {
+        flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+    }
+    flags
 }
 
 #[cfg(test)]
