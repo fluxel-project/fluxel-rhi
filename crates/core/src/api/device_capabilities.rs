@@ -191,6 +191,12 @@ pub struct DeviceCapabilities {
     pub texture_atomic_r32sint_exchange_compute: bool,
     /// Native compute can atomically compare and exchange an R32Sint storage texel.
     pub texture_atomic_r32sint_compare_exchange_compute: bool,
+    /// Native compute can atomically AND an R32Sint storage texel.
+    pub texture_atomic_r32sint_and_compute: bool,
+    /// Native compute can atomically OR an R32Sint storage texel.
+    pub texture_atomic_r32sint_or_compute: bool,
+    /// Native compute can atomically XOR an R32Sint storage texel.
+    pub texture_atomic_r32sint_xor_compute: bool,
     pub binding_arrays: bool,
     /// A binding array whose count is chosen at bind-group creation time.
     /// This is deliberately separate from fixed-size binding arrays: shader

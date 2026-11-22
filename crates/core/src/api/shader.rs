@@ -106,6 +106,12 @@ pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_EXCHANGE: &str = "texture-atomic
 /// Native compute atomic compare-exchange on an R32Sint storage texture.
 pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_COMPARE_EXCHANGE: &str =
     "texture-atomic-r32sint-compare-exchange";
+/// Native compute atomic AND on an R32Sint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_AND: &str = "texture-atomic-r32sint-and";
+/// Native compute atomic OR on an R32Sint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_OR: &str = "texture-atomic-r32sint-or";
+/// Native compute atomic XOR on an R32Sint storage texture.
+pub const SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_XOR: &str = "texture-atomic-r32sint-xor";
 /// Direct SPIR-V compute Float32 `OpAtomicFAddEXT` on storage-buffer memory.
 pub const SHADER_FEATURE_FLOAT32_ATOMIC_BUFFER_ADD: &str = "float32-atomic-buffer-add";
 /// Direct SPIR-V compute Float32 `OpAtomicFAddEXT` on workgroup/shared memory.
@@ -217,6 +223,15 @@ impl<B: ShaderBackend> Device<B> {
                 }
                 SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_COMPARE_EXCHANGE => {
                     self.caps.texture_atomic_r32sint_compare_exchange_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_AND => {
+                    self.caps.texture_atomic_r32sint_and_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_OR => {
+                    self.caps.texture_atomic_r32sint_or_compute
+                }
+                SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_XOR => {
+                    self.caps.texture_atomic_r32sint_xor_compute
                 }
                 _ => return false,
             };

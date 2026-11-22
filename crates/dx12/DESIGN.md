@@ -352,8 +352,9 @@ route. The pipeline compares the artifact's per-register atomic use in
 PSV0 with explicit R64Uint atomic bindings. Optional copies preserve
 eight-byte scalar texels. The texture has no sampled or attachment view.
 
-Native compute R32Uint and R32Sint exchange and compare-exchange have
-separate format capability bits. The caller declares the native shader's
+Native compute R32Uint and R32Sint add, min/max, bitwise operations,
+exchange, and compare-exchange use the corresponding format capability
+bits. The caller declares the native shader's
 operation requirements and the logical format of each UAV. Pipeline
 creation verifies that each required format has a matching active typed 2D
 UAV register span. PSV0 identifies the register and view kind. The shader

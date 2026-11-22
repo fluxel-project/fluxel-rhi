@@ -520,7 +520,10 @@ impl<B: ResourceBackend> Device<B> {
                             || (!self.caps.texture_atomic_r32sint_exchange_compute
                                 && !self
                                     .caps
-                                    .texture_atomic_r32sint_compare_exchange_compute))
+                                    .texture_atomic_r32sint_compare_exchange_compute
+                                && !self.caps.texture_atomic_r32sint_and_compute
+                                && !self.caps.texture_atomic_r32sint_or_compute
+                                && !self.caps.texture_atomic_r32sint_xor_compute))
                         || entry.visibility.as_slice() != [ShaderStage::Compute]) =>
                 {
                     return Err(Error::Unsupported("R32Sint compute texture atomic binding"));

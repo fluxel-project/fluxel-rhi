@@ -382,16 +382,19 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             };
             device.0.shader_model < 60
                 || !facts.contains(operation)
-                || !matches!(
-                    desc.format,
-                    api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(60..=69)
-                )
+                || !match desc.format {
+                    api::ShaderFormat::Wgsl => {
+                        shader_atomics::r32_texture_wgsl_supported(format, operation)
+                    }
+                    api::ShaderFormat::Dxil => desc.entries.len() == 1,
+                    api::ShaderFormat::Hlsl(60..=69) => true,
+                    _ => false,
+                }
                 || desc.entries.is_empty()
                 || !desc
                     .entries
                     .iter()
                     .all(|entry| entry.stage == api::ShaderStage::Compute)
-                || (desc.format == api::ShaderFormat::Dxil && desc.entries.len() != 1)
         }) {
             return api::ShaderRoute::Unsupported;
         }
@@ -492,85 +495,6 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                     .entries
                     .iter()
                     .any(|entry| entry.stage == api::ShaderStage::Fragment))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD)
-            && (desc.format != api::ShaderFormat::Wgsl
-                || desc.entries.is_empty()
-                || !desc
-                    .entries
-                    .iter()
-                    .all(|entry| entry.stage == api::ShaderStage::Compute))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MIN)
-            && (desc.format != api::ShaderFormat::Wgsl
-                || desc.entries.is_empty()
-                || !desc
-                    .entries
-                    .iter()
-                    .all(|entry| entry.stage == api::ShaderStage::Compute))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MAX)
-            && (desc.format != api::ShaderFormat::Wgsl
-                || desc.entries.is_empty()
-                || !desc
-                    .entries
-                    .iter()
-                    .all(|entry| entry.stage == api::ShaderStage::Compute))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR)
-            && (desc.format != api::ShaderFormat::Wgsl
-                || desc.entries.is_empty()
-                || !desc
-                    .entries
-                    .iter()
-                    .all(|entry| entry.stage == api::ShaderStage::Compute))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc.required_features.iter().any(|feature| {
-            feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND
-                || feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR
-                || feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN
-                || feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MAX
-        }) && (desc.format != api::ShaderFormat::Wgsl
-            || desc.entries.is_empty()
-            || !desc
-                .entries
-                .iter()
-                .all(|entry| entry.stage == api::ShaderStage::Compute))
-        {
-            return api::ShaderRoute::Unsupported;
-        }
-        if desc
-            .required_features
-            .iter()
-            .any(|feature| feature == api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD)
-            && (desc.format != api::ShaderFormat::Wgsl
-                || desc.entries.is_empty()
-                || !desc
-                    .entries
-                    .iter()
-                    .all(|entry| entry.stage == api::ShaderStage::Compute))
         {
             return api::ShaderRoute::Unsupported;
         }
@@ -750,15 +674,6 @@ fn shader_features_supported(
         api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
         api::SHADER_FEATURE_EARLY_DEPTH_TEST => true,
         api::SHADER_FEATURE_BARYCENTRICS => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MAX => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MIN => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MAX => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND => true,
-        api::SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR => true,
         "shaderClipDistance" => true,
         SUBGROUP_FEATURE => wave_ops_supported,
         other => {

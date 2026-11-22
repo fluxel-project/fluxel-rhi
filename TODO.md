@@ -258,9 +258,10 @@ and that a mixed-use sRGB sampled view can span multiple mips.
 Compare each advertised R32 texture atomic operation with its compute
 binding layout. Exercise a format support result with an atomic bit but
 without typed load or store and verify that it cannot enable the operation.
-For the native R32Uint and R32Sint exchange and compare-exchange routes,
-check old and new values, successful and failed comparisons, signed and
-unsigned edge values, and rejection of wrong UAV formats and dimensions.
+For the native R32Uint and R32Sint routes, check old and new values for
+add, min/max, AND, OR, XOR, exchange, and compare-exchange. Cover successful
+and failed comparisons, signed and unsigned edge values, and rejection
+of wrong UAV formats and dimensions.
 Cover HLSL and stripped DXIL. The artifact's declared operation remains
 the caller's contract because PSV0 has no per-operation 32-bit atomic flag.
 

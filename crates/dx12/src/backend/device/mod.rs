@@ -485,6 +485,12 @@ impl Dx12 {
                 storage_textures: true,
                 texture_atomic_r32uint_compute,
                 texture_atomic_r32sint_compute,
+                texture_atomic_r32sint_and_compute: shader_model >= 60
+                    && sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS),
+                texture_atomic_r32sint_or_compute: shader_model >= 60
+                    && sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS),
+                texture_atomic_r32sint_xor_compute: shader_model >= 60
+                    && sint_atomics.contains(D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS),
                 texture_atomic_r32sint_min_compute,
                 texture_atomic_r32sint_max_compute,
                 texture_atomic_r32uint_min_compute,

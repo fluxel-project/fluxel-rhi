@@ -11,6 +11,36 @@ pub(super) fn r32_texture_requirement(
     const COMPARE: D3D12_FORMAT_SUPPORT2 =
         D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE;
     match feature {
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_ADD => {
+            Some((TextureFormat::R32Uint, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD))
+        }
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_ADD => {
+            Some((TextureFormat::R32Sint, D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_ADD))
+        }
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MIN | SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_MAX => {
+            Some((
+                TextureFormat::R32Uint,
+                D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX,
+            ))
+        }
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MIN | SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_MAX => {
+            Some((
+                TextureFormat::R32Sint,
+                D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX,
+            ))
+        }
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_AND
+        | SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_OR
+        | SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_XOR => Some((
+            TextureFormat::R32Uint,
+            D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS,
+        )),
+        SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_AND
+        | SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_OR
+        | SHADER_FEATURE_TEXTURE_ATOMIC_R32SINT_XOR => Some((
+            TextureFormat::R32Sint,
+            D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS,
+        )),
         SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_EXCHANGE => Some((TextureFormat::R32Uint, EXCHANGE)),
         SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_COMPARE_EXCHANGE => {
             Some((TextureFormat::R32Uint, COMPARE))
@@ -21,6 +51,16 @@ pub(super) fn r32_texture_requirement(
         }
         _ => None,
     }
+}
+
+pub(super) fn r32_texture_wgsl_supported(
+    format: api::TextureFormat,
+    operation: D3D12_FORMAT_SUPPORT2,
+) -> bool {
+    operation != D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE
+        && operation != D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE
+        && !(format == api::TextureFormat::R32Sint
+            && operation == D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS)
 }
 
 #[derive(Clone, Copy, Default)]
