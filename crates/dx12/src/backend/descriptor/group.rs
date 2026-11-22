@@ -121,6 +121,7 @@ pub(crate) fn create_bind_group(
     let mut raw_storage_bindings = Vec::new();
     let mut dynamic_storage = Vec::new();
     let mut textures = Vec::new();
+    let mut feedback_textures = Vec::new();
     let mut accelerations = Vec::new();
     let mut samplers = Vec::new();
     let mut view_index = 0u32;
@@ -167,6 +168,21 @@ pub(crate) fn create_bind_group(
                 continue;
             };
             match (slot.class, resource) {
+                (DescriptorClass::Uav, api::BindingResource::SamplerFeedback(binding))
+                    if matches!(slot.binding_type, api::BindingType::SamplerFeedback { .. }) =>
+                {
+                    // SAFETY: Core checked the binding kind and device identity.
+                    // The group retains both resources through GPU completion.
+                    let (target, map) = unsafe { binding.native_pair() };
+                    super::super::sampler_feedback::write_uav(
+                        device,
+                        target,
+                        map,
+                        view_cpu(view_index),
+                    )?;
+                    feedback_textures.extend([target.clone(), map.clone()]);
+                    view_index += 1;
+                }
                 (DescriptorClass::Srv, api::BindingResource::Acceleration(acceleration))
                     if slot.view_dimension.is_none() =>
                 {
@@ -372,6 +388,7 @@ pub(crate) fn create_bind_group(
         device: device.0.native.clone(),
         shadow_views,
         _textures: textures,
+        _feedback_textures: feedback_textures,
         accelerations,
         _samplers: samplers,
         view_start: start,

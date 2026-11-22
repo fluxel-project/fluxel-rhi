@@ -39,6 +39,8 @@ pub struct ShaderEntryPoint {
 /// `ray_query` capability. The caller must declare features used by opaque shader
 /// artifacts; Core does not inspect native bytecode.
 pub const SHADER_FEATURE_RAY_QUERY: &str = "ray-query";
+/// Native opaque sampler-feedback UAV and texture-feedback shader operations.
+pub const SHADER_FEATURE_SAMPLER_FEEDBACK: &str = "sampler-feedback";
 /// The shader uses layout-declared inline constants.
 pub const SHADER_FEATURE_PUSH_CONSTANTS: &str = "push-constants";
 /// Standard WGSL immediate address space.
@@ -212,6 +214,7 @@ impl<B: ShaderBackend> Device<B> {
                 .all(|entry| entry.stage == ShaderStage::Compute);
         if desc.required_features.iter().any(|feature| {
             let supported = match feature.as_str() {
+                SHADER_FEATURE_SAMPLER_FEEDBACK => self.caps.sampler_feedback.is_some(),
                 SHADER_FEATURE_TEXTURE_ATOMIC_R32UINT_EXCHANGE => {
                     self.caps.texture_atomic_r32uint_exchange_compute
                 }

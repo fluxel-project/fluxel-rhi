@@ -143,6 +143,11 @@ fn binding_type(
                 multisampled,
             }
         }
+        D3D_SIT_UAV_FEEDBACKTEXTURE => {
+            return Err(Error::Unsupported(
+                "DXIL sampler feedback requires an explicit layout",
+            ));
+        }
         D3D_SIT_UAV_RWTYPED => {
             return Err(Error::Unsupported(
                 "DXIL typed UAV requires an explicit binding format",

@@ -9,7 +9,9 @@ use fluxel_rhi_core::api::{
 use windows::Win32::Graphics::Direct3D12::*;
 
 use super::super::pipeline::PipelineLayoutState;
-use super::dxil_container::{malformed, parts, word};
+use super::dxil_container::{
+    FEEDBACK_TEXTURE_2D, FEEDBACK_TEXTURE_2D_ARRAY, malformed, parts, word,
+};
 
 // Layouts follow DxilContainer.h and DxilPipelineStateValidation.h in DXC.
 const RESOURCE_PREFIX_SIZE: usize = 16;
@@ -66,14 +68,32 @@ pub(in crate::backend) fn validate(
     layout: &PipelineLayoutState,
 ) -> Result<()> {
     let validate_visibility = layout.requires_native_binding_validation(stage);
+    let has_feedback = layout
+        .binding_entries
+        .iter()
+        .any(|(_, entry)| matches!(entry.ty, BindingType::SamplerFeedback { .. }));
     for row in resource_rows(bytes, stage)? {
-        let acceleration =
-            row.len() >= RESOURCE_DETAILS_SIZE && word(row, 16)? == ACCELERATION_STRUCTURE;
-        if !validate_visibility && !acceleration {
+        let kind = if row.len() >= RESOURCE_DETAILS_SIZE {
+            word(row, 16)?
+        } else {
+            0
+        };
+        let acceleration = kind == ACCELERATION_STRUCTURE;
+        let feedback = match kind {
+            FEEDBACK_TEXTURE_2D => Some(TextureViewDimension::D2),
+            FEEDBACK_TEXTURE_2D_ARRAY => Some(TextureViewDimension::D2Array),
+            _ => None,
+        };
+        let resource_type = word(row, 0)?;
+        if !validate_visibility
+            && !acceleration
+            && feedback.is_none()
+            && !(has_feedback && (UAV_TYPED..=9).contains(&resource_type))
+        {
             continue;
         }
         // PSVResourceType orders Sampler, CBV, SRVs, then UAVs.
-        let class = match word(row, 0)? {
+        let class = match resource_type {
             1 => 3,
             2 => 0,
             3..=5 => 1,
@@ -86,6 +106,29 @@ pub(in crate::backend) fn validate(
         if start >= end {
             return Err(malformed());
         }
+        if let Some(dimension) = feedback {
+            if resource_type != UAV_TYPED {
+                return Err(malformed());
+            }
+            let matches_layout = end - start == 1
+                && feedback_bindings(layout, space, start..end).any(|(entry, actual)| {
+                    actual == dimension && entry.visibility.contains(&stage)
+                });
+            if !matches_layout {
+                return Err(Error::Shader(format!(
+                    "DX12 sampler feedback UAV {start} in space {space} lacks a matching visible {dimension:?} binding"
+                )));
+            }
+        } else if has_feedback
+            && class == 2
+            && feedback_bindings(layout, space, start..end)
+                .next()
+                .is_some()
+        {
+            return Err(Error::Shader(format!(
+                "DX12 ordinary UAV range {start}..{end} in space {space} overlaps a sampler feedback binding"
+            )));
+        }
         if acceleration {
             if class != 1 {
                 return Err(malformed());
@@ -96,6 +139,37 @@ pub(in crate::backend) fn validate(
         }
     }
     Ok(())
+}
+
+fn feedback_bindings(
+    layout: &PipelineLayoutState,
+    space: u32,
+    registers: std::ops::Range<u64>,
+) -> impl Iterator<
+    Item = (
+        &fluxel_rhi_core::api::BindGroupLayoutEntry,
+        TextureViewDimension,
+    ),
+> {
+    layout
+        .binding_entries
+        .iter()
+        .filter_map(move |(group, entry)| {
+            let BindingType::SamplerFeedback { dimension, .. } = entry.ty else {
+                return None;
+            };
+            (*group == space
+                && layout
+                    .register_map
+                    .iter()
+                    .any(|&(group, binding, register, class, _)| {
+                        group == space
+                            && binding == entry.binding
+                            && class == 2
+                            && registers.contains(&u64::from(register))
+                    }))
+            .then_some((entry, dimension))
+        })
 }
 
 pub(in crate::backend) fn validate_r64uint_bindings(

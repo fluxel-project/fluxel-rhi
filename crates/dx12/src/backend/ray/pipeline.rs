@@ -108,6 +108,15 @@ fn admit_pipeline<'a>(
     }
     // SAFETY: Core checked that the layout belongs to the pipeline device.
     let layout = &unsafe { desc.layout.native_ref() }.0;
+    if layout
+        .binding_entries
+        .iter()
+        .any(|(_, entry)| matches!(entry.ty, api::BindingType::SamplerFeedback { .. }))
+    {
+        return Err(Error::Unsupported(
+            "DX12 ray pipeline sampler feedback layout",
+        ));
+    }
     if !layout.native_abi_compatible {
         return Err(Error::Unsupported("DX12 DXIL descriptor register overlap"));
     }

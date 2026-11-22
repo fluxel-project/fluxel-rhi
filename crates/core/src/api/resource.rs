@@ -422,6 +422,11 @@ pub enum BindingType {
         comparison: bool,
     },
     AccelerationStructure,
+    /// A native sampler-feedback UAV, separate from ordinary storage textures.
+    SamplerFeedback {
+        mode: SamplerFeedbackMode,
+        dimension: TextureViewDimension,
+    },
     /// A backend-imported, immutable video-frame snapshot. It is not an
     /// ordinary texture view and is supported only by backends with an
     /// external-video sampling route.
@@ -467,6 +472,7 @@ pub enum BindingResource<'a, B: Backend> {
         view: StorageBufferView,
     },
     TextureView(&'a TextureView<B>),
+    SamplerFeedback(SamplerFeedbackBinding<'a, B>),
     /// A backend-imported video frame, usable only with `BindingType::VideoFrame`.
     VideoFrame(&'a VideoFrame<B>),
     Sampler(&'a Sampler<B>),
@@ -540,6 +546,7 @@ pub(crate) fn binding_resource_device<B: Backend>(
         BindingResource::Buffer { buffer, .. }
         | BindingResource::StorageBufferView { buffer, .. } => buffer.device == device,
         BindingResource::TextureView(v) => v.device == device,
+        BindingResource::SamplerFeedback(value) => value.map.device == device,
         BindingResource::VideoFrame(v) => v.device == device,
         BindingResource::Sampler(v) => v.device == device,
         BindingResource::Acceleration(v) => v.device == device,
@@ -588,6 +595,10 @@ pub(crate) fn binding_matches<B: Backend>(
             BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. }
         ),
         BindingResource::VideoFrame(_) => matches!(ty, BindingType::VideoFrame),
+        BindingResource::SamplerFeedback(value) => {
+            matches!(ty, BindingType::SamplerFeedback { mode, dimension }
+            if *mode == value.map.descriptor().mode && *dimension == value.map.binding_dimension())
+        }
         BindingResource::Sampler(_) => matches!(ty, BindingType::Sampler { .. }),
         BindingResource::Acceleration(_) => matches!(ty, BindingType::AccelerationStructure),
     }

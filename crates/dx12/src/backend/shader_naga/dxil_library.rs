@@ -4,7 +4,9 @@ use fluxel_rhi_core::api::{Error, Result, ShaderStage};
 use windows::Win32::Graphics::Direct3D12::*;
 
 use super::super::pipeline::PipelineLayoutState;
-use super::dxil_container::{parts, shader_model, word};
+use super::dxil_container::{
+    FEEDBACK_TEXTURE_2D, FEEDBACK_TEXTURE_2D_ARRAY, parts, shader_model, word,
+};
 
 // Prefixes from DXC's DxilRuntimeReflection.h and RDAT_LibraryTypes.inl.
 const RDAT_VERSION: u32 = 0x10;
@@ -68,7 +70,7 @@ pub(in crate::backend) fn validate_export(
     }
     let resource_list = word(function, 8)?;
     if resource_list != u32::MAX {
-        validate_acceleration_resources(&tables, resource_list, stage, layout)?;
+        validate_resources(&tables, resource_list, stage, layout)?;
     }
     Ok(())
 }
@@ -81,7 +83,7 @@ struct RuntimeTables<'a> {
     functions: Option<&'a [u8]>,
 }
 
-fn validate_acceleration_resources(
+fn validate_resources(
     tables: &RuntimeTables<'_>,
     resource_list: u32,
     stage: ShaderStage,
@@ -114,7 +116,11 @@ fn validate_acceleration_resources(
             .clone()
             .nth(word(entry, 0)? as usize)
             .ok_or_else(malformed)?;
-        if word(resource, 4)? == ACCELERATION_STRUCTURE {
+        let kind = word(resource, 4)?;
+        if matches!(kind, FEEDBACK_TEXTURE_2D | FEEDBACK_TEXTURE_2D_ARRAY) {
+            return Err(Error::Unsupported("DX12 ray library sampler feedback"));
+        }
+        if kind == ACCELERATION_STRUCTURE {
             if word(resource, 0)? != SRV_CLASS {
                 return Err(malformed());
             }

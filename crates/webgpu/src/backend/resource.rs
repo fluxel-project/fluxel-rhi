@@ -640,6 +640,9 @@ impl fluxel_rhi_core::backend::ResourceBackend for WebGpu {
                     // DeviceId before entering the backend SPI.
                     unsafe { view.native_ref() }.raw.clone()
                 }
+                api::BindingResource::SamplerFeedback(_) => {
+                    return Err(Error::Unsupported("WebGPU sampler feedback binding"));
+                }
                 api::BindingResource::VideoFrame(frame) => {
                     // SAFETY: Core validated this frame's DeviceId before
                     // entering the backend SPI.

@@ -84,6 +84,9 @@ pub(crate) fn stage_map(
                     api::BindingType::VideoFrame => {
                         return Err(api::Error::Unsupported("Metal external texture binding"));
                     }
+                    api::BindingType::SamplerFeedback { .. } => {
+                        return Err(api::Error::Unsupported("Metal sampler feedback binding"));
+                    }
                 }
             };
             let counter = match kind {

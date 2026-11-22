@@ -139,6 +139,28 @@ fn layout_state(
                     multisampled: false,
                 });
             }
+            api::BindingType::SamplerFeedback { dimension, .. }
+                if device.0.sampler_feedback.is_some()
+                    && descriptor_count == 1
+                    && matches!(
+                        dimension,
+                        api::TextureViewDimension::D2 | api::TextureViewDimension::D2Array
+                    ) =>
+            {
+                slots.push(BindingSlot {
+                    binding_type: entry.ty.clone(),
+                    binding: entry.binding,
+                    min_size: 0,
+                    class: DescriptorClass::Uav,
+                    dynamic_offset: false,
+                    descriptor_count,
+                    runtime_sized: false,
+                    view_dimension: None,
+                    texture_sample: None,
+                    texture_format: None,
+                    multisampled: false,
+                });
+            }
             api::BindingType::Sampler { .. } => {
                 slots.push(BindingSlot {
                     binding_type: entry.ty.clone(),

@@ -426,6 +426,20 @@ impl<B: ResourceBackend> Device<B> {
             {
                 return Err(Error::InvalidState);
             }
+            if let BindingType::SamplerFeedback { dimension, .. } = entry.ty {
+                if self.caps.sampler_feedback.is_none() {
+                    return Err(Error::Unsupported("sampler feedback binding"));
+                }
+                if !matches!(
+                    dimension,
+                    TextureViewDimension::D2 | TextureViewDimension::D2Array
+                ) || entry.count != BindingCount::One
+                    || entry.partially_bound
+                    || entry.nonuniform_indexing
+                {
+                    return Err(Error::InvalidState);
+                }
+            }
             match entry.count {
                 BindingCount::One => {}
                 BindingCount::Fixed(0) => return Err(Error::InvalidRange),
@@ -567,7 +581,7 @@ impl<B: ResourceBackend> Device<B> {
                 BindingType::AccelerationStructure => {
                     self.caps.nonuniform_acceleration_structure_indexing
                 }
-                BindingType::VideoFrame => false,
+                BindingType::VideoFrame | BindingType::SamplerFeedback { .. } => false,
             };
             if entry.nonuniform_indexing && !nonuniform_supported {
                 return Err(Error::Unsupported("nonuniform binding indexing"));

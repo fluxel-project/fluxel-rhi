@@ -91,6 +91,9 @@ pub(crate) fn validate_array_limits(
             BindingType::SampledTexture { .. } | BindingType::StorageTexture { .. } => 1,
             BindingType::Sampler { .. } => 2,
             BindingType::VideoFrame => return Err(api::Error::Unsupported("video frame binding")),
+            BindingType::SamplerFeedback { .. } => {
+                return Err(api::Error::Unsupported("sampler feedback binding"));
+            }
         };
         counts[index] = counts[index]
             .checked_add(u64::from(count))
@@ -186,6 +189,9 @@ pub(crate) fn argument_elements(
         BindingType::Sampler { .. } => Ok(A::Sampler(None)),
         BindingType::AccelerationStructure => Ok(A::Acceleration(None)),
         BindingType::VideoFrame => Err(api::Error::Unsupported("video frame binding")),
+        BindingType::SamplerFeedback { .. } => {
+            Err(api::Error::Unsupported("sampler feedback binding"))
+        }
     };
     let mut result = Vec::new();
     result
@@ -450,6 +456,9 @@ fn bind_one(
         api::BindingResource::VideoFrame(_) => {
             return Err(api::Error::Unsupported("video frame binding"));
         }
+        api::BindingResource::SamplerFeedback(_) => {
+            return Err(api::Error::Unsupported("sampler feedback binding"));
+        }
         api::BindingResource::Array(_) => return Err(api::Error::InvalidState),
     };
     Ok(resource)
@@ -507,7 +516,7 @@ pub(super) fn create_pipeline_layout(
 
 fn supported_type(ty: &BindingType) -> bool {
     match ty {
-        BindingType::VideoFrame => false,
+        BindingType::VideoFrame | BindingType::SamplerFeedback { .. } => false,
         _ => true,
     }
 }

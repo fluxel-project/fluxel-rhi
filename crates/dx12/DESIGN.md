@@ -625,11 +625,17 @@ through completion. The pass resets the combiners and unbinds the image
 when used. DX12 supplies fine shading outside a smaller image's extent.
 
 Sampler feedback allocates a dedicated opaque map with the sampled texture's
-base dimensions, mip count and array size. Explicit map commands clear and
-decode that allocation, while the caller records unordered-access and resolve
-dependencies. Decoding writes ordinary R8Uint texels that can be copied and
-read through standard RHI operations. The backend retains the map, paired
-image, destination, and clear descriptor owners where those commands need them.
+base dimensions, mip count and array size. OPTIONS7, Device8, and SM 6.5
+qualify the native HLSL and DXIL route. Explicit layouts bind the map through
+a single paired sampler feedback UAV. PSV metadata checks the UAV's dimension
+and stage visibility and rejects ordinary UAVs at feedback registers. The
+caller uses the same sampled texture and feedback mode in the shader and
+honors the advertised tier's sampler and SRV restrictions.
+
+Explicit map commands clear and decode the allocation. The caller records
+unordered-access and resolve dependencies and consumes the feedback. Decoding
+writes ordinary R8Uint texels for copy and readback. Recorded work retains the
+map, paired image, destination, and descriptor owners it uses.
 
 Timestamp queries can be recorded on the graphics or compute queue, between
 encoder commands or at a chosen position in a raster or compute pass. A

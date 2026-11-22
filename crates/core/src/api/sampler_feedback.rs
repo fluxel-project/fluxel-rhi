@@ -2,7 +2,7 @@
 
 use super::{
     CommandEncoder, Device, DeviceId, Error, Result, Texture, TextureDimension, TextureFormat,
-    TextureUsage,
+    TextureUsage, TextureViewDimension,
 };
 use crate::backend::{Backend, CommandBackend};
 
@@ -57,6 +57,46 @@ impl<B: Backend> SamplerFeedbackMap<B> {
 
     pub fn decode_layout(&self) -> SamplerFeedbackDecodeLayout {
         self.decode
+    }
+
+    pub fn binding_dimension(&self) -> TextureViewDimension {
+        if self.decode.array_layers == 1 {
+            TextureViewDimension::D2
+        } else {
+            TextureViewDimension::D2Array
+        }
+    }
+
+    /// Exposes this map to a native shader's feedback UAV slot.
+    ///
+    /// # Safety
+    /// Shader calls through this binding must use the map's paired texture as
+    /// the sampled operand and declare the matching feedback mode. For DX12
+    /// Tier 0.9 the sampler must use wrap or clamp and the SRV must span the
+    /// full texture, including all mips and array layers, with plane and
+    /// minimum-LOD clamp zero. The caller establishes the map's UAV state.
+    pub unsafe fn binding(&self) -> SamplerFeedbackBinding<'_, B> {
+        SamplerFeedbackBinding { map: self }
+    }
+}
+
+pub struct SamplerFeedbackBinding<'a, B: Backend> {
+    pub(crate) map: &'a SamplerFeedbackMap<B>,
+}
+
+impl<B: Backend> Clone for SamplerFeedbackBinding<'_, B> {
+    fn clone(&self) -> Self {
+        Self { map: self.map }
+    }
+}
+
+impl<B: Backend> SamplerFeedbackBinding<'_, B> {
+    /// # Safety
+    /// The backend must keep the two resources paired and retain references
+    /// while a descriptor or recorded command still refers to them.
+    #[doc(hidden)]
+    pub unsafe fn native_pair(&self) -> (&B::NativeTexture, &B::NativeTexture) {
+        (&self.map.target.native, &self.map.native)
     }
 }
 

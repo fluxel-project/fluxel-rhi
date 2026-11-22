@@ -49,6 +49,21 @@ fn device8(device: &Dx12Device) -> Result<ID3D12Device8> {
         .map_err(|_| Error::Unsupported("DX12 sampler feedback device interface"))
 }
 
+pub(super) fn write_uav(
+    device: &Dx12Device,
+    target: &Dx12Texture,
+    map: &Dx12Texture,
+    handle: D3D12_CPU_DESCRIPTOR_HANDLE,
+) -> Result<()> {
+    let native = device8(device)?;
+    // SAFETY: the caller supplies a slot in the device's view heap and
+    // provides the map and its paired target from the typed Core binding.
+    unsafe {
+        native.CreateSamplerFeedbackUnorderedAccessView(&target.0.resource, &map.0.resource, handle)
+    };
+    Ok(())
+}
+
 impl SamplerFeedbackBackend for Dx12 {
     fn create_feedback_map(
         device: &Dx12Device,

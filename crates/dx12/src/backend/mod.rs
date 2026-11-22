@@ -393,6 +393,23 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
         {
             return api::ShaderRoute::Unsupported;
         }
+        if desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_SAMPLER_FEEDBACK)
+            && (device.0.sampler_feedback.is_none()
+                || !matches!(
+                    desc.format,
+                    api::ShaderFormat::Dxil | api::ShaderFormat::Hlsl(65..=69)
+                )
+                || desc.entries.is_empty()
+                || desc
+                    .entries
+                    .iter()
+                    .any(|entry| ray::pipeline::is_ray_stage(entry.stage)))
+        {
+            return api::ShaderRoute::Unsupported;
+        }
         if desc.required_features.iter().any(|feature| {
             let Some((format, operation)) = shader_atomics::r32_texture_requirement(feature) else {
                 return false;
@@ -588,6 +605,10 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
             api::ShaderFormat::Hlsl(model) => direct_hlsl_entries_supported(device, &desc, model),
             _ => false,
         };
+        let sampler_feedback = desc
+            .required_features
+            .iter()
+            .any(|feature| feature == api::SHADER_FEATURE_SAMPLER_FEEDBACK);
         let int64_atomics = desc
             .required_features
             .iter()
@@ -614,6 +635,12 @@ impl fluxel_rhi_core::backend::ShaderBackend for Dx12 {
                 Err(Error::Shader("empty DXIL artifact".into()))
             }
             api::ShaderFormat::Dxil => {
+                if sampler_feedback {
+                    shader_naga::validate_sampler_feedback_model(
+                        &desc.bytes,
+                        maximum_shader_model,
+                    )?;
+                }
                 if int64_atomics {
                     shader_naga::validate_atomic_dxil(&desc.bytes, maximum_shader_model)?;
                 }
@@ -702,7 +729,7 @@ fn shader_features_supported(
         api::SHADER_FEATURE_INT64 => true,
         api::SHADER_FEATURE_PRIMITIVE_INDEX => true,
         api::SHADER_FEATURE_EARLY_DEPTH_TEST => true,
-        api::SHADER_FEATURE_BARYCENTRICS => true,
+        api::SHADER_FEATURE_BARYCENTRICS | api::SHADER_FEATURE_SAMPLER_FEEDBACK => true,
         "shaderClipDistance" => true,
         SUBGROUP_FEATURE => wave_ops_supported,
         other => {

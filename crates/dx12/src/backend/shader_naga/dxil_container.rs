@@ -5,6 +5,9 @@ use fluxel_rhi_core::api::{Error, Result};
 // The DXIL container and part headers are specified in DXC's DxilContainer.h.
 const CONTAINER_HEADER_SIZE: usize = 32;
 const PART_HEADER_SIZE: usize = 8;
+// DXC's DXIL ResourceKind values shared by PSV0 and RDAT.
+pub(super) const FEEDBACK_TEXTURE_2D: u32 = 17;
+pub(super) const FEEDBACK_TEXTURE_2D_ARRAY: u32 = 18;
 
 /// Verify the selected pixel program's written dual-source output registers.
 pub(in crate::backend) fn validate_dual_source_outputs(
@@ -80,6 +83,17 @@ pub(in crate::backend) fn validate_atomic_dxil(bytes: &[u8], maximum_model: u16)
 
 pub(super) fn shader_model(program_version: u32) -> u16 {
     (((program_version >> 4) & 0xf) * 10 + (program_version & 0xf)) as u16
+}
+
+pub(in crate::backend) fn validate_sampler_feedback_model(
+    bytes: &[u8],
+    maximum_model: u16,
+) -> Result<()> {
+    let (program, _) = parts(bytes, *b"PSV0")?;
+    if !(65..=maximum_model).contains(&shader_model(word(program, 0)?)) {
+        return Err(Error::Unsupported("DX12 sampler feedback shader model"));
+    }
+    Ok(())
 }
 
 /// The native artifact must declare the typed-resource Int64 atomic feature.

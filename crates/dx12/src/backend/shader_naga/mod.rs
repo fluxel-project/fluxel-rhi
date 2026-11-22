@@ -17,7 +17,8 @@ mod native_layout_reflection;
 mod sampler_lowering;
 pub(super) use dxc::compile_ray_library;
 pub(super) use dxil_container::{
-    validate_atomic_dxil, validate_dual_source_outputs, validate_typed_int64_atomics,
+    validate_atomic_dxil, validate_dual_source_outputs, validate_sampler_feedback_model,
+    validate_typed_int64_atomics,
 };
 pub(super) use dxil_library::validate_export as validate_dxil_library_export;
 pub(super) use dxil_mesh::validate as validate_mesh_metadata;

@@ -530,6 +530,7 @@ pub(crate) struct BindGroupState {
     device: ID3D12Device,
     shadow_views: Option<ID3D12DescriptorHeap>,
     _textures: Vec<super::Dx12TextureView>,
+    _feedback_textures: Vec<super::Dx12Texture>,
     accelerations: Vec<super::Dx12Acceleration>,
     _samplers: Vec<super::Dx12Sampler>,
     view_start: u32,

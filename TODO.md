@@ -1372,11 +1372,17 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
   that shape with a workload that needs mesh-generated rates. Secondary
   lists do not record their own rate state. Reopen if a caller needs that
   route and can qualify bundle inheritance and restoration.
-- **R24b, IMPLEMENTING — sampler feedback.** Opaque MinMip and MipRegionUsed
-  maps support explicit clear, state transitions, and decode. A Tier 1.0 GPU
-  probe read back the cleared `255` and `0` values, respectively. Finish the
-  paired feedback UAV binding and native shader path. Verify nonempty feedback
-  for a known mip and region, tier restrictions, and input lifetime.
+- **R24b, VERIFYING — sampler feedback.** Opaque MinMip and MipRegionUsed
+  maps support explicit clear, paired UAV binding, state transitions, and
+  decode. Tier 1.0 GPU readback verified cleared values and explicit mip-zero
+  writes through HLSL 2D and precompiled DXIL 2D-array compute shaders.
+  Add permanent coverage for these paths, raster writes, tier restrictions,
+  binding lifetime, and unsupported devices. DXR library bindings and
+  arrays of feedback descriptors are deferred. Reopen with a concrete
+  workload and native metadata validation for the corresponding layout,
+  including descriptor range and stage checks. Layout inference requires a
+  reliable source for the shader's feedback mode. WGSL has no standard
+  sampler feedback operation.
 - **R24c, DESIGNING — geometry and tessellation stages.** Define shader-stage
   linkage, reflection, pipeline ABI, limits, and DXIL/HLSL/WGSL route facts.
   Verify geometry-shader amplification and hull/domain patch evaluation with

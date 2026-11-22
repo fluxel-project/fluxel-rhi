@@ -147,6 +147,9 @@ pub(super) fn binding_layout_entry(
             )?;
             field(&native, "storageTexture", storage)?;
         }
+        api::BindingType::SamplerFeedback { .. } => {
+            return Err(Error::Unsupported("WebGPU sampler feedback binding"));
+        }
         api::BindingType::VideoFrame => {
             let external_texture = descriptor();
             field(&native, "externalTexture", external_texture)?;
