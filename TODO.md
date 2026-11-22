@@ -1358,13 +1358,20 @@ device loss. Frame pacing and recovery belong to Renderer and Host.
 - **R24 — optional DX12 execution mechanisms.** Qualify each of the five
   shapes below independently. A bounded GPU workload can exercise a native
   mechanism. A shared Core operation also needs a meaningful caller contract.
-- **R24a, IMPLEMENTING — variable-rate shading.** Per-draw rate selection
+- **R24a, VERIFYING — variable-rate shading.** Per-draw rate selection
   uses the current pass's attachment sample count. A Radeon 780M probe reads
   distinct 2×2 and fine-shading output and verifies pass-end reset. Attachmentless
   passes have no fixed attachment sample count. Reopen that case once pipeline
   changes can qualify the active rate against a declared sample count.
-  Tier 2 image and combiners still need lowering. Add permanent negative
-  contract cases and GPU readback for each supported rate source.
+  Tier 2 binds the rate image and combiners after an explicit source layout
+  transition. The GPU probe verifies coarse output inside a small image,
+  fine output outside it, and clean state in the next pass. Add permanent
+  negative cases, native shader primitive-rate coverage, and tests for
+  additional rates and SUM on devices that expose them. Mesh primitive rate
+  requires a separate OPTIONS10 and shader-artifact admission check. Reopen
+  that shape with a workload that needs mesh-generated rates. Secondary
+  lists do not record their own rate state. Reopen if a caller needs that
+  route and can qualify bundle inheritance and restoration.
 - **R24b, DESIGNING — sampler feedback.** Define feedback-map resources,
   resolve, synchronization, and tier restrictions. Acceptance requires GPU
   feedback readback. Capability reporting alone is insufficient.

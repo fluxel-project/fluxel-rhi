@@ -46,6 +46,7 @@ pub struct CommandEncoder<B: CommandBackend> {
     pub(crate) direct_buffer_upload: bool,
     pub(crate) direct_texture_upload: bool,
     pub(crate) native_interop: bool,
+    shading_rate_image: bool,
     pub(crate) debug_group_depth: u32,
 }
 impl<B: CommandBackend> CommandEncoder<B> {
@@ -79,6 +80,10 @@ impl<B: CommandBackend> CommandEncoder<B> {
             direct_buffer_upload: device.caps.direct_buffer_upload,
             direct_texture_upload: device.caps.direct_texture_upload,
             native_interop: device.caps.native_interop,
+            shading_rate_image: device
+                .caps
+                .shading_rate
+                .is_some_and(|caps| caps.image.is_some()),
             debug_group_depth: 0,
         })
     }
@@ -123,8 +128,16 @@ impl<B: CommandBackend> CommandEncoder<B> {
     pub fn transition_resources(&mut self, ops: &[ResourceTransition<'_, B>]) -> Result<()> {
         // Core validates provenance and lane endpoints only. It deliberately
         // does not inspect neighboring commands to infer missing transitions.
-        if ops.iter().any(|op| !op.valid_for(self.device, self.lane)) {
-            return Err(Error::WrongDevice);
+        for op in ops {
+            if !op.valid_for(self.device, self.lane) {
+                return Err(Error::WrongDevice);
+            }
+            if !self.shading_rate_image
+                && matches!(op, ResourceTransition::Texture(barrier)
+                if barrier.layout.is_some_and(|(from, to)| from == ImageLayout::ShadingRateSource || to == ImageLayout::ShadingRateSource))
+            {
+                return Err(Error::Unsupported("shading rate image layout"));
+            }
         }
         self.call(|e| B::transition(e, ops))
     }

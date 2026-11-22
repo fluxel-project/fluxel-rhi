@@ -194,6 +194,9 @@ impl fluxel_rhi_core::backend::CommandBackend for Dx12 {
                     let (from_layout, to_layout) = barrier_op.layout.ok_or(Error::Unsupported(
                         "DX12 texture transition requires explicit layouts",
                     ))?;
+                    if [from_layout, to_layout].contains(&api::ImageLayout::ShadingRateSource) {
+                        super::super::shading_rate::validate_image(&encoder.device, texture)?;
+                    }
                     let depth = super::super::texture::is_depth(desc.format);
                     let planar = super::super::texture::planar::is_planar(desc.format);
                     if [from_layout, to_layout].into_iter().any(|layout| {

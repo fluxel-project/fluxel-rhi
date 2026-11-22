@@ -92,6 +92,12 @@ pub(crate) fn texture_state(
             }
         }
         api::ImageLayout::Common => Ok(D3D12_RESOURCE_STATE_COMMON),
+        api::ImageLayout::ShadingRateSource
+            if uses.stages.contains(api::StageMask::FRAGMENT)
+                && uses.accesses == api::AccessMask::SHADING_RATE_READ =>
+        {
+            Ok(D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE)
+        }
         api::ImageLayout::CopySrc => {
             if uses.accesses.contains(api::AccessMask::COPY_READ) {
                 Ok(D3D12_RESOURCE_STATE_COPY_SOURCE)

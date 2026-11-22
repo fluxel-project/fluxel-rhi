@@ -204,6 +204,18 @@ pub trait RasterBackend: CommandBackend {
     fn set_shading_rate(_encoder: &mut Self::NativeEncoder, _rate: ShadingRate) -> Result<()> {
         Err(Error::Unsupported("per-draw shading rate"))
     }
+    /// Sets all shading rate sources. An error leaves recording unchanged.
+    fn set_shading_rate_state(
+        _encoder: &mut Self::NativeEncoder,
+        _rate: ShadingRate,
+        _combiners: [ShadingRateCombiner; 2],
+        _image: Option<&Self::NativeTexture>,
+    ) -> Result<()> {
+        Err(Error::Unsupported("shading rate image and combiners"))
+    }
+    fn shading_rate_texel(_rate: ShadingRate) -> Result<u8> {
+        Err(Error::Unsupported("shading rate image"))
+    }
     fn begin_raster(
         encoder: &mut Self::NativeEncoder,
         desc: &RasterPassDesc<'_, Self>,

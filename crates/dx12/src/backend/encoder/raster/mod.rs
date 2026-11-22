@@ -83,6 +83,17 @@ impl fluxel_rhi_core::backend::RasterBackend for Dx12 {
     fn set_shading_rate(encoder: &mut Dx12Encoder, rate: api::ShadingRate) -> Result<(), Error> {
         super::super::shading_rate::set(encoder, rate)
     }
+    fn set_shading_rate_state(
+        encoder: &mut Dx12Encoder,
+        rate: api::ShadingRate,
+        combiners: [api::ShadingRateCombiner; 2],
+        image: Option<&Self::NativeTexture>,
+    ) -> Result<(), Error> {
+        super::super::shading_rate::set_state(encoder, rate, combiners, image)
+    }
+    fn shading_rate_texel(rate: api::ShadingRate) -> Result<u8, Error> {
+        Ok(super::super::shading_rate::native_rate(rate).0 as u8)
+    }
     fn begin_raster(
         encoder: &mut Dx12Encoder,
         desc: &api::RasterPassDesc<'_, Self>,

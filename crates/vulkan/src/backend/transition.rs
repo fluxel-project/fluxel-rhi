@@ -556,6 +556,9 @@ pub(super) fn validate_texture_use(
         return Err(Error::Unsupported("Vulkan texture transition usage"));
     }
     match layout {
+        api::ImageLayout::ShadingRateSource => {
+            return Err(Error::Unsupported("Vulkan shading rate image layout"));
+        }
         api::ImageLayout::CopySrc if !accesses.contains(api::AccessMask::COPY_READ) => {
             return Err(Error::Unsupported("Vulkan CopySrc layout access"));
         }
@@ -630,6 +633,9 @@ pub(super) fn layout(layout: api::ImageLayout) -> vk::ImageLayout {
             vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         }
         api::ImageLayout::DepthReadOnly => vk::ImageLayout::DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        api::ImageLayout::ShadingRateSource => {
+            vk::ImageLayout::FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR
+        }
         api::ImageLayout::Present => vk::ImageLayout::PRESENT_SRC_KHR,
     }
 }

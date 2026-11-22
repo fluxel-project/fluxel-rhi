@@ -347,6 +347,9 @@ fn validate_texture_transition(
     transition: &api::ExternalTextureTransition,
 ) -> Result<(D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATES)> {
     encoder.device.require_active()?;
+    if [transition.layout.0, transition.layout.1].contains(&api::ImageLayout::ShadingRateSource) {
+        super::shading_rate::validate_image(&encoder.device, texture)?;
+    }
     let desc = &texture.0.desc;
     let planes = texture::aspect_planes(desc.format);
     let expected = planes[0] | planes[1];

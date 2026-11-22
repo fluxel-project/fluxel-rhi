@@ -56,6 +56,7 @@ impl AccessMask {
     pub const ACCEL_WRITE: Self = Self(1 << 17);
     pub const QUERY_RESOLVE_WRITE: Self = Self(1 << 18);
     pub const RAY_TRACING_SHADER_DATA_READ: Self = Self(1 << 19);
+    pub const SHADING_RATE_READ: Self = Self(1 << 20);
     pub const ALL: Self = Self(u64::MAX);
 }
 macro_rules! mask_ops {
@@ -136,6 +137,8 @@ pub enum ImageLayout {
     ColorAttachment,
     DepthStencilAttachment,
     DepthReadOnly,
+    /// Raster shading-rate input. Use FRAGMENT and SHADING_RATE_READ.
+    ShadingRateSource,
     Present,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

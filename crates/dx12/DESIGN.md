@@ -617,6 +617,12 @@ variable-rate shading. The active raster attachment sample count and the
 additional-rates bit qualify the request. D3D12 can select a finer rate under
 its shader and pipeline rules. At pass end the backend restores fine shading
 only when the caller used the feature.
+Tier 2 adds a screen-space `R8Uint` image and two explicit combiners. The
+runtime-declared tile size and OPTIONS10 SUM support qualify the requested
+state. The application encodes the image values, prepares the image, and
+supplies its `ShadingRateSource` transition. Binding retains the resource
+through completion. The pass resets the combiners and unbinds the image
+when used. DX12 supplies fine shading outside a smaller image's extent.
 
 Timestamp queries can be recorded on the graphics or compute queue, between
 encoder commands or at a chosen position in a raster or compute pass. A
