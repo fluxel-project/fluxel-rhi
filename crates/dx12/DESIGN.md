@@ -642,6 +642,10 @@ secondary draws use the same admission rule, and all views use the
 pass's shared viewport and scissor.
 
 Mesh multiview requires both native mesh shaders and view instancing.
+Mesh and amplification stages use precompiled DXIL. Their `PSV0` data
+qualifies shader model, thread group size when encoded, topology, output
+counts and the task-to-mesh payload size before native PSO creation. The
+driver validates payload linkage, packed signatures and shared output budgets.
 DXIL mesh pipelines use the same view ordinal mapping and mask admission
 as vertex raster pipelines. Each view location uses its ordinal as the array
 index within the attachment view and selects viewport zero. A meshlet

@@ -162,7 +162,12 @@ fn sub<T>(tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE, value: T) -> Subobject<T> {
     Subobject { tag, value }
 }
 
-fn shader<'a>(stage: &'a api::PipelineStage<Dx12>, expected: api::ShaderStage) -> Result<&'a [u8]> {
+fn shader<'a>(
+    device: &Dx12Device,
+    stage: &'a api::PipelineStage<Dx12>,
+    expected: api::ShaderStage,
+    topology: api::PrimitiveTopology,
+) -> Result<(&'a [u8], u32)> {
     if !stage.constants.is_empty() {
         return Err(Error::Unsupported("DX12 mesh shader specialization"));
     }
@@ -183,20 +188,20 @@ fn shader<'a>(stage: &'a api::PipelineStage<Dx12>, expected: api::ShaderStage) -
         .iter()
         .find(|entry| entry.name == stage.entry && entry.stage == expected)
         .ok_or(Error::InvalidState)?;
-    let max_invocations = match expected {
-        api::ShaderStage::Mesh => SHADER_LIMITS.max_mesh_workgroup_invocations,
-        api::ShaderStage::Task => SHADER_LIMITS.max_task_workgroup_invocations,
-        _ => return Ok(&shader.bytes),
-    };
-    // This validates the caller's declaration. Native PSO creation validates
-    // the DXIL, including artifacts with no declared workgroup size.
-    if let Some(size) = entry.workgroup_size {
-        let invocations = size.into_iter().try_fold(1u32, u32::checked_mul);
-        if invocations.is_none_or(|count| count == 0 || count > max_invocations) {
-            return Err(Error::InvalidRange);
+    let payload = match expected {
+        api::ShaderStage::Mesh | api::ShaderStage::Task => {
+            super::shader_naga::validate_mesh_metadata(
+                &shader.bytes,
+                expected,
+                entry.workgroup_size,
+                topology,
+                device.0.shader_model,
+                SHADER_LIMITS,
+            )?
         }
-    }
-    Ok(&shader.bytes)
+        _ => 0,
+    };
+    Ok((&shader.bytes, payload))
 }
 fn bytecode(bytes: &[u8]) -> D3D12_SHADER_BYTECODE {
     D3D12_SHADER_BYTECODE {
@@ -244,16 +249,23 @@ fn admit_pipeline<'a>(
     let attachments =
         fixed::lower_attachments(device, &desc.targets, desc.depth_stencil, desc.multisample)?;
     let raster = fixed::lower_raster(desc.primitive, desc.multisample, attachments.depth)?;
-    let mesh = shader(&desc.mesh, api::ShaderStage::Mesh)?;
+    let primitive = desc.primitive.topology;
+    let (mesh, mesh_payload) = shader(device, &desc.mesh, api::ShaderStage::Mesh, primitive)?;
     let task = desc
         .task
         .as_ref()
-        .map(|s| shader(s, api::ShaderStage::Task))
+        .map(|s| shader(device, s, api::ShaderStage::Task, primitive))
         .transpose()?;
+    if mesh_payload != 0 && task.is_none_or(|(_, payload)| payload != mesh_payload) {
+        return Err(Error::Shader(
+            "DX12 mesh payload requires a task shader with the same payload size".into(),
+        ));
+    }
+    let task = task.map(|(bytes, _)| bytes);
     let fragment = desc
         .fragment
         .as_ref()
-        .map(|s| shader(s, api::ShaderStage::Fragment))
+        .map(|s| shader(device, s, api::ShaderStage::Fragment, primitive).map(|(bytes, _)| bytes))
         .transpose()?;
     if let Some(required) = attachments.dual_source {
         super::shader_naga::validate_dual_source_outputs(fragment, required)?;

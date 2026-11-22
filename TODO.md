@@ -575,6 +575,10 @@ vertex on indexed draws.
 **Status:** Mesh pipelines and topology queries share admission for native
 line-list and triangle-list output. Point and strip output are unavailable.
 DX12 reports the mesh and task shader limits on mesh-capable devices.
+Mesh and task use precompiled DXIL. Artifact admission checks the device
+shader model, topology, output counts, thread group size where encoded,
+and the payload size shared between task and mesh. Native PSO creation
+checks payload linkage and the combined output and payload budget.
 
 **Acceptance:** Verify line and triangle output on a supporting GPU and
 reject unsupported topologies and shader/PSO topology mismatches.
@@ -582,8 +586,9 @@ Check shader declaration admission against the reported invocation, output,
 and combined task payload limits.
 Check the optional Mesh and Task workgroup declarations at exactly 128
 invocations and with zero, excessive or overflowing dimensions. DXIL without
-a declaration still uses native PSO validation. Signature packing, dynamic
-output counts and payload linkage require native artifact validation.
+a declaration checks `numthreads` when the artifact provides it. Cover a
+task payload that changes visible mesh output, an incompatible payload,
+and pipeline ownership through completion.
 
 DX12 publishes the shader-written render target array index bound. Tier 1
 mesh devices report eight choices unless OPTIONS9 proves the full 2048
