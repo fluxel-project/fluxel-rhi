@@ -77,6 +77,7 @@ fn raster_rect_clear_rejects_empty_overflow_and_outside_ranges_before_spi() {
     let id = DeviceId::allocate().unwrap();
     let mut caps = DeviceCapabilities::default();
     caps.rect_attachment_clear = true;
+    caps.limits.max_color_attachments = 1;
     // SAFETY: this fixture pairs the native value and capabilities with its ID.
     let device = unsafe { Device::<NativeShared>::from_native(id, Arc::new(()), caps) };
     let lane = LaneId {

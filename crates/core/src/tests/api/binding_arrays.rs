@@ -67,6 +67,7 @@ fn device(runtime_arrays: bool) -> Device<NativeShared> {
     caps.storage_textures = true;
     caps.nonuniform_sampler_indexing = true;
     caps.limits.max_bindings_per_group = 4;
+    caps.limits.max_color_attachments = 1;
     // SAFETY: this fixture supplies a native handle and capabilities for the same mock device.
     unsafe { Device::from_native(id, Arc::new(()), caps) }
 }
