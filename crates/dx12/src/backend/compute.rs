@@ -198,13 +198,15 @@ impl fluxel_rhi_core::backend::ComputeOps<Dx12> for Compute {
         validate_raw_bindings(encoder)?;
         // D3D12's guaranteed direct-dispatch count limits.  Keep this in
         // lockstep with `DeviceCapabilities::limits` in the public API.
-        if groups.contains(&0)
-            || groups
-                .iter()
-                .zip(MAX_DISPATCH_GROUPS)
-                .any(|(&value, limit)| value > limit)
+        if groups
+            .iter()
+            .zip(MAX_DISPATCH_GROUPS)
+            .any(|(&value, limit)| value > limit)
         {
             return Err(Error::InvalidRange);
+        }
+        if groups.contains(&0) {
+            return Ok(());
         }
         // SAFETY: validated group counts are copied into the encoder-owned
         // open list; this call does not borrow caller memory.

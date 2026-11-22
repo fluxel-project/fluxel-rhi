@@ -45,6 +45,9 @@ with a bit above it. Include the prepared raster path used by queries.
 **Compute dispatch:** Core checks each direct dispatch count against the
 published axis limit before recording. Verify exact-limit and one-past-limit
 counts and confirm that a valid dispatch can follow the rejected call.
+Check a zero in each axis, including a zero paired with an out-of-range
+axis. A qualified zero-grid call leaves output untouched and a later
+nonempty call can still execute in the same pass.
 GPU-produced indirect arguments must obey the same native bounds.
 
 **Push constant range:** Match layout support and creation at the published
